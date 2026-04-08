@@ -17,11 +17,11 @@ from memory.ingestion import ingest_documents
 
 
 def build_system_prompt() -> str:
-    from datetime import date
-    today = date.today().isoformat()
+    from datetime import datetime
+    now = datetime.now()
     return f"""You are Second Brain, a general-purpose AI assistant with persistent memory and tool capabilities.
 
-Today's date is {today}.
+Current date and time: {now.strftime("%A, %B %d, %Y at %I:%M %p")}.
 
 You have access to several types of memory:
 - **Working Memory**: The current conversation (recent messages)
