@@ -135,6 +135,21 @@ class VectorStore:
         if results["ids"]:
             collection.delete(ids=results["ids"])
 
+    def get_all(self, collection_name: str, limit: int = 100) -> list[dict]:
+        """Get all memories from a collection (up to limit)."""
+        collection = self.collections[collection_name]
+        if collection.count() == 0:
+            return []
+        results = collection.get(limit=min(limit, collection.count()))
+        memories = []
+        for i in range(len(results["ids"])):
+            memories.append({
+                "id": results["ids"][i],
+                "text": results["documents"][i],
+                "metadata": results["metadatas"][i],
+            })
+        return memories
+
     def count(self, collection_name: str) -> int:
         return self.collections[collection_name].count()
 

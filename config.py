@@ -103,6 +103,31 @@ AUTO_EXTRACT_MEMORIES = True
 EXTRACT_EVERY_N_EXCHANGES = 7
 
 # =============================================================================
+# MEMORY MAINTENANCE (dedup + consolidation)
+# =============================================================================
+
+# Dedup: how many similar memories to compare against before storing
+DEDUP_TOP_K = 3
+
+# Dedup: minimum relevance score to consider a memory a potential duplicate
+DEDUP_MIN_RELEVANCE = 0.35
+
+# Consolidation: how often to run (in exchanges)
+CONSOLIDATE_EVERY_N_EXCHANGES = 25
+
+# Consolidation: also run on shutdown
+CONSOLIDATE_ON_SHUTDOWN = True
+
+# Consolidation: max memories to process in one batch (cost safety valve)
+CONSOLIDATION_BATCH_LIMIT = 100
+
+# Consolidation: similarity threshold for grouping (0-1, higher = stricter)
+CONSOLIDATION_SIMILARITY_THRESHOLD = 0.45
+
+# Consolidation: max memories per cluster (prevents over-merging)
+CONSOLIDATION_MAX_CLUSTER_SIZE = 5
+
+# =============================================================================
 # COST CONTROLS
 # =============================================================================
 

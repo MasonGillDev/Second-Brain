@@ -46,6 +46,13 @@ class AgentCore:
         """Stop MCP servers and save session."""
         if config.AUTO_EXTRACT_MEMORIES:
             self.memory.extract_memories()
+        if config.CONSOLIDATE_ON_SHUTDOWN:
+            stats = self.memory.consolidate_memories()
+            if config.LOG_TOKEN_USAGE:
+                if stats.get("clusters_found", 0) > 0:
+                    print(f"  [consolidate] Merged {stats['clusters_found']} clusters: {stats['memories_before']} → {stats['memories_after']} memories")
+                else:
+                    print(f"  [consolidate] No clusters found ({stats.get('memories_before', 0)} memories checked)")
         self.memory.conversation.save_session()
         if self._enable_tools:
             try:

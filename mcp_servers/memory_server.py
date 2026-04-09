@@ -2,17 +2,27 @@
 Memory MCP Server.
 
 Gives the agent real tools to store and search its own long-term memory.
+Uses MemoryMaintenance for dedup on write.
 """
 
-import time
-import chromadb
+import sys
+import os
+
+# Add project root to path so we can import memory modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+import anthropic
 from mcp.server.fastmcp import FastMCP
+from memory.vector_store import VectorStore
+from memory.maintenance import MemoryMaintenance
 
 mcp = FastMCP("memory")
 
-CHROMA_DIR = "./memory/data/chroma"
-_client = chromadb.PersistentClient(path=CHROMA_DIR)
-_collection = _client.get_or_create_collection(name="long_term")
+_vector_store = VectorStore()
+_maintenance = MemoryMaintenance(_vector_store, anthropic.Anthropic())
 
 
 @mcp.tool()
@@ -27,13 +37,17 @@ def store_memory(text: str, category: str = "general") -> str:
               Bad: "The user said they like Go"
         category: One of: user_fact, preference, decision, project_context, general
     """
-    doc_id = f"long_term_{int(time.time() * 1000)}"
-    _collection.add(
-        documents=[text],
-        metadatas=[{"type": "agent_stored", "category": category, "created_at": time.time()}],
-        ids=[doc_id],
-    )
-    return f"Stored: {text}"
+    result = _maintenance.dedup_and_store("long_term", text, {
+        "type": "agent_stored",
+        "category": category,
+    })
+
+    if result["action"] == "SKIP":
+        return f"Already known: {text}"
+    elif result["action"] == "MERGE":
+        return f"Updated existing memory with: {text}"
+    else:
+        return f"Stored: {text}"
 
 
 @mcp.tool()
@@ -46,23 +60,15 @@ def search_memory(query: str, top_k: int = 5) -> str:
         query: What to search for (e.g., "user's name", "programming preferences").
         top_k: Maximum number of results to return (default 5).
     """
-    if _collection.count() == 0:
-        return "No memories stored yet."
+    results = _vector_store.query("long_term", query, top_k=top_k)
 
-    results = _collection.query(
-        query_texts=[query],
-        n_results=min(top_k, _collection.count()),
-    )
-
-    if not results["ids"][0]:
+    if not results:
         return "No relevant memories found."
 
     lines = []
-    for i, (doc_id, text, meta) in enumerate(zip(
-        results["ids"][0], results["documents"][0], results["metadatas"][0]
-    )):
-        category = meta.get("category", "")
-        lines.append(f"- ({category}) {text}")
+    for mem in results:
+        category = mem["metadata"].get("category", "")
+        lines.append(f"- ({category}) {mem['text']}")
 
     return "\n".join(lines)
 
@@ -70,16 +76,15 @@ def search_memory(query: str, top_k: int = 5) -> str:
 @mcp.tool()
 def list_all_memories() -> str:
     """List all stored long-term memories. Use when the user asks what you remember about them."""
-    if _collection.count() == 0:
+    all_memories = _vector_store.get_all("long_term", limit=50)
+
+    if not all_memories:
         return "No memories stored yet."
 
-    results = _collection.get(limit=50)
-    lines = [f"Long-term memories ({_collection.count()} total):\n"]
-    for doc_id, text, meta in zip(
-        results["ids"], results["documents"], results["metadatas"]
-    ):
-        category = meta.get("category", "")
-        lines.append(f"- [{doc_id}] ({category}) {text}")
+    lines = [f"Long-term memories ({len(all_memories)} total):\n"]
+    for mem in all_memories:
+        category = mem["metadata"].get("category", "")
+        lines.append(f"- [{mem['id']}] ({category}) {mem['text']}")
 
     return "\n".join(lines)
 
@@ -93,7 +98,7 @@ def delete_memory(memory_id: str) -> str:
         memory_id: The ID of the memory to delete (from list_all_memories).
     """
     try:
-        _collection.delete(ids=[memory_id])
+        _vector_store.delete("long_term", memory_id)
         return f"Deleted memory {memory_id}"
     except Exception as e:
         return f"Error deleting memory: {e}"

@@ -14,6 +14,7 @@ import config
 from memory.conversation import ConversationMemory, estimate_tokens
 from memory.vector_store import VectorStore
 from memory.ingestion import ingest_documents
+from memory.maintenance import MemoryMaintenance
 
 
 def build_system_prompt() -> str:
@@ -92,6 +93,7 @@ class MemoryManager:
         self.conversation = ConversationMemory()
         self.vector_store = VectorStore()
         self._llm_client = anthropic.Anthropic()
+        self.maintenance = MemoryMaintenance(self.vector_store, self._llm_client)
         self._exchange_count = 0
         self._ingest_docs_on_start()
 
@@ -112,12 +114,16 @@ class MemoryManager:
         if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.EXTRACT_EVERY_N_EXCHANGES == 0:
             self.extract_memories()
 
+        # Run consolidation every N exchanges
+        if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.CONSOLIDATE_EVERY_N_EXCHANGES == 0:
+            self.consolidate_memories()
+
     def remember(self, text: str, memory_type: str = "long_term", metadata: dict | None = None) -> str:
-        """Store something in long-term memory."""
+        """Store something in long-term memory (with dedup)."""
         meta = metadata or {}
         meta["type"] = memory_type
-        doc_id = self.vector_store.add(memory_type, text, meta)
-        return doc_id
+        result = self.maintenance.dedup_and_store(memory_type, text, meta)
+        return result.get("id") or "skipped"
 
     def store_episode(self, summary: str, outcome: str, tags: list[str] | None = None):
         """Store an episodic memory."""
@@ -192,11 +198,12 @@ class MemoryManager:
                 if not isinstance(mem, dict) or "text" not in mem:
                     continue
                 category = mem.get("category", "general")
-                self.vector_store.add("long_term", mem["text"], {
+                result = self.maintenance.dedup_and_store("long_term", mem["text"], {
                     "type": "auto_extracted",
                     "category": category,
                 })
-                stored += 1
+                if result["action"] != "SKIP":
+                    stored += 1
 
             if stored > 0 and config.LOG_TOKEN_USAGE:
                 print(f"  [extract] Auto-stored {stored} memories: {[m['text'][:50] for m in memories[:3]]}")
@@ -288,6 +295,10 @@ class MemoryManager:
             print(f"  [context] system: ~{sys_tokens}t | messages: ~{msg_tokens}t | total: ~{sys_tokens + msg_tokens}t")
 
         return system, messages
+
+    def consolidate_memories(self) -> dict:
+        """Run memory consolidation."""
+        return self.maintenance.consolidate("long_term")
 
     def ingest_docs(self) -> int:
         """Re-scan and ingest documents."""
