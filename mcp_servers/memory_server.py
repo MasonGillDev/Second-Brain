@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import anthropic
+import config
 from mcp.server.fastmcp import FastMCP
 from memory.vector_store import VectorStore
 from memory.maintenance import MemoryMaintenance
@@ -67,7 +68,8 @@ def search_memory(query: str, top_k: int = 5) -> str:
 
     lines = []
     for mem in results:
-        category = mem["metadata"].get("category", "")
+        meta = mem.get("metadata") or {}
+        category = meta.get("category", "")
         lines.append(f"- ({category}) {mem['text']}")
 
     return "\n".join(lines)
@@ -102,6 +104,45 @@ def delete_memory(memory_id: str) -> str:
         return f"Deleted memory {memory_id}"
     except Exception as e:
         return f"Error deleting memory: {e}"
+
+
+@mcp.tool()
+def update_personality(personality: str) -> str:
+    """
+    Replace your personality/voice description with a new version.
+    This text is injected into your system prompt and shapes how you communicate.
+
+    ALWAYS call get_personality first, then revise and write the full updated text.
+    Do not discard traits that are still relevant — merge old and new.
+
+    Focus on tone, style, and behavioral traits.
+    Example: "Direct and dry. Uses analogies. Skips filler. Matches the user's energy."
+
+    Args:
+        personality: The complete personality text (replaces current entirely).
+    """
+    max_chars = getattr(config, "PERSONALITY_MAX_CHARS", 500)
+
+    if len(personality) > max_chars:
+        return f"Too long ({len(personality)} chars). Max is {max_chars}. Shorten and try again."
+
+    path = config.PERSONALITY_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    with open(path, "w") as f:
+        f.write(personality)
+
+    return f"Personality updated ({len(personality)}/{max_chars} chars)."
+
+
+@mcp.tool()
+def get_personality() -> str:
+    """Read the current personality description. Always check this before calling update_personality."""
+    path = config.PERSONALITY_FILE
+    if not os.path.exists(path):
+        return "(No personality set yet.)"
+    with open(path) as f:
+        return f.read().strip() or "(Empty.)"
 
 
 if __name__ == "__main__":

@@ -59,7 +59,7 @@ RETRIEVAL_TOP_K_PROCEDURAL = 2
 
 # Minimum relevance score (0-1) to include a retrieved memory.
 # Higher = stricter filtering = fewer but more relevant results = lower cost.
-RETRIEVAL_MIN_RELEVANCE = 0.5
+RETRIEVAL_MIN_RELEVANCE = 0.3
 
 # Minimum word count in a user message to trigger memory retrieval.
 # Short messages like "yes", "ok", "thanks" skip retrieval entirely to save tokens.
@@ -122,7 +122,7 @@ CONSOLIDATE_ON_SHUTDOWN = True
 CONSOLIDATION_BATCH_LIMIT = 100
 
 # Consolidation: similarity threshold for grouping (0-1, higher = stricter)
-CONSOLIDATION_SIMILARITY_THRESHOLD = 0.45
+CONSOLIDATION_SIMILARITY_THRESHOLD = 0.30
 
 # Consolidation: max memories per cluster (prevents over-merging)
 CONSOLIDATION_MAX_CLUSTER_SIZE = 5
@@ -148,6 +148,12 @@ LOG_TOKEN_USAGE = True
 
 # File to save/restore conversation state (messages + rolling summary)
 SESSION_FILE = "./memory/data/session.json"
+
+# Agent-editable personality file. The agent can update this to refine its own voice.
+PERSONALITY_FILE = "./memory/data/personality.txt"
+
+# Max characters for the personality block (keeps system prompt lean)
+PERSONALITY_MAX_CHARS = 500
 
 # =============================================================================
 # TOOLS / MCP SERVERS
@@ -182,6 +188,16 @@ MCP_SERVERS = {
         "args": ["./mcp_servers/memory_server.py"],
         "env": None,
     },
+    "code": {
+        "command": "./venv/bin/python",
+        "args": ["./mcp_servers/code_server.py"],
+        "env": None,
+    },
+    "imessage": {
+        "command": "./venv/bin/python",
+        "args": ["./mcp_servers/imessage_server.py"],
+        "env": None,
+    },
 }
 
 # Allowlist of tools per server. Only these tools get exposed to the model.
@@ -199,30 +215,18 @@ TOOL_ALLOWLIST = {
     # "calendar": None,  # None = all tools allowed (default)
 }
 
-# Keyword routing: maps keywords in user messages to MCP server names.
-# Only tool definitions from matched servers get sent to the model.
-# If no keywords match, no tools are sent (saves tokens on casual chat).
-# Keywords are matched case-insensitively against the user's message.
-TOOL_ROUTING = {
-    "filesystem": [
-        "file", "files", "read", "write", "create file", "edit", "directory",
-        "folder", "list files", "save", "open", "path", "config", ".py", ".md",
-        ".json", ".txt", ".js", ".ts", "code", "script", "source",
-    ],
-    "calendar": [
-        "calendar", "event", "events", "meeting", "appointment",
-        "tomorrow", "today", "this week", "next week", "busy", "free",
-        "agenda", "when am i", "what's on", "whats on",
-    ],
-    "scheduler": [
-        "schedule", "cron", "scheduled", "every day", "every morning",
-        "every hour", "recurring", "remind me", "daily", "weekly",
-        "set up a task", "automated", "run every", "at 8am", "at 9am",
-    ],
-    # Memory tools are always included (see ALWAYS_INCLUDE_SERVERS below)
+# Skill manifest: lightweight descriptions shown in the system prompt.
+# The agent calls `activate_skill` to load the full tool definitions on demand.
+# Servers listed in ALWAYS_INCLUDE_SERVERS are excluded (always available).
+SKILL_MANIFEST = {
+    "filesystem": "Read, write, edit, and search files and directories on the local machine.",
+    "calendar": "View and manage Google Calendar events (create, list, search, update, delete).",
+    "scheduler": "Create and manage recurring scheduled tasks (cron-like jobs, daily reminders).",
+    "code": "Delegate coding tasks to Claude Code — research codebases, write/edit code, and manage background processes (start/stop dev servers, etc.).",
+    "imessage": "Read iMessage history — get recent messages, search conversations, check unread messages.",
 }
 
-# These servers' tools are ALWAYS sent, regardless of keyword routing.
+# These servers' tools are ALWAYS sent without needing activation.
 # Memory tools must always be available so the agent can store facts anytime.
 ALWAYS_INCLUDE_SERVERS = ["memory"]
 

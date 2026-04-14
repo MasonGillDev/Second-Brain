@@ -40,7 +40,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "/remember <text> — Store in long-term memory\n"
         "/stats — Memory statistics\n"
-        "/clear — Clear conversation history"
+        "/clear — Clear conversation history\n"
+        "/cancel — Stop all running tool processes"
     )
 
 
@@ -48,6 +49,15 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /clear command."""
     agent.memory.conversation.clear_session()
     await update.message.reply_text("Conversation cleared. Long-term memories preserved.")
+
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command — stop all active tool processes."""
+    if agent:
+        agent.cancel()
+        await update.message.reply_text("Cancelling...")
+    else:
+        await update.message.reply_text("Nothing running.")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -115,6 +125,7 @@ def main():
     # Register handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("clear", clear_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # /remember and /stats are handled by AgentCore.process() via the text handler

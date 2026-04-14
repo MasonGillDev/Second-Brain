@@ -8,6 +8,8 @@ Interfaces just call `agent.process(message)` and get a response.
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
+import os
 import config
 from memory.manager import MemoryManager
 from skills.router import ToolRouter
@@ -35,6 +37,8 @@ class AgentCore:
         self.adapter = create_adapter()
         self._enable_tools = enable_tools and config.TOOLS_ENABLED
         self._started = False
+        self._cancelled = False
+        self._active_task: asyncio.Task | None = None
 
     async def start(self):
         """Start MCP servers. Call once before processing messages."""
@@ -60,6 +64,24 @@ class AgentCore:
             except (Exception, BaseException):
                 pass
 
+    def cancel(self):
+        """Cancel the current processing loop and any active subprocesses."""
+        self._cancelled = True
+        # Signal the code server to kill its subprocess
+        signal_file = os.path.join(os.path.dirname(__file__), "memory", "data", ".cancel_signal")
+        with open(signal_file, "w") as f:
+            f.write("cancel")
+        if self._active_task and not self._active_task.done():
+            self._active_task.cancel()
+        print("  [cancel] Cancellation requested")
+
+    def _build_tools(self) -> list[dict] | None:
+        """Get current tools: meta-tools + always-on + activated skills."""
+        if not self._enable_tools:
+            return None
+        all_tools = self.router.get_tools()
+        return self.adapter.format_tools(all_tools) if all_tools else None
+
     async def process(self, user_input: str) -> str:
         """
         Process a user message and return the agent's response.
@@ -82,17 +104,25 @@ class AgentCore:
         # Add user message to conversation memory
         self.memory.add_user_message(user_input)
 
+        # Reset cancellation state
+        self._cancelled = False
+        signal_file = os.path.join(os.path.dirname(__file__), "memory", "data", ".cancel_signal")
+        if os.path.exists(signal_file):
+            os.remove(signal_file)
+
         # Build context
         system_prompt, messages = self.memory.build_messages(user_input)
 
-        # Route: only include tools relevant to this message
-        matched_tools = self.router.get_tools(user_input)
-        tools = self.adapter.format_tools(matched_tools) if matched_tools else None
+        # Build initial tool set (always-on + meta-tools, no activated skills yet)
+        tools = self._build_tools()
 
         # Tool-use loop
         total_usage = Usage()
 
         for round_num in range(config.MAX_TOOL_ROUNDS):
+            if self._cancelled:
+                break
+
             response = await self.adapter.chat(system_prompt, messages, tools)
             total_usage = total_usage + response.usage
 
@@ -104,7 +134,19 @@ class AgentCore:
 
             # Execute tools
             tool_results = []
+            tools_changed = False
+
             for tc in response.tool_calls:
+                # Handle activate_skill meta-tool locally
+                if tc.name == "activate_skill":
+                    skill_name = tc.arguments.get("skill_name", "")
+                    result = self.router.activate_skill(skill_name)
+                    tool_results.append((tc.id, result))
+                    tools_changed = True
+                    if config.LOG_TOKEN_USAGE:
+                        print(f"  [skill] Activated: {skill_name}")
+                    continue
+
                 if config.LOG_TOKEN_USAGE:
                     args_preview = str(tc.arguments)[:80]
                     print(f"  [tool] {tc.name}({args_preview})")
@@ -118,10 +160,20 @@ class AgentCore:
 
             messages.append(self.adapter.format_tool_results(tool_results))
 
+            if self._cancelled:
+                break
+
+            # Rebuild tool list if skills were activated this round
+            if tools_changed:
+                tools = self._build_tools()
+
             if round_num == config.MAX_TOOL_ROUNDS - 1:
                 print(f"  [warning] Hit max tool rounds ({config.MAX_TOOL_ROUNDS})")
 
-        assistant_text = response.text or ""
+        if self._cancelled:
+            assistant_text = "Cancelled."
+        else:
+            assistant_text = response.text or ""
 
         # Log token usage
         if config.LOG_TOKEN_USAGE:
@@ -129,8 +181,9 @@ class AgentCore:
             output_cost = (total_usage.output_tokens / 1000) * config.OUTPUT_COST_PER_1K
             print(f"  [tokens] in: {total_usage.input_tokens} | out: {total_usage.output_tokens} | cost: ${input_cost + output_cost:.4f}")
 
-        # Store in conversation memory
+        # Store in conversation memory and persist session
         self.memory.add_assistant_message(assistant_text)
+        self.memory.conversation.save_session()
 
         return assistant_text
 

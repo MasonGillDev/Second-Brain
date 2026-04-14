@@ -17,11 +17,48 @@ from memory.ingestion import ingest_documents
 from memory.maintenance import MemoryMaintenance
 
 
+def _build_skill_manifest() -> str:
+    """Build the skill manifest block for the system prompt."""
+    manifest = getattr(config, "SKILL_MANIFEST", {})
+    if not manifest:
+        return ""
+    lines = []
+    for name, desc in manifest.items():
+        lines.append(f"- **{name}**: {desc}")
+    skills_text = "\n".join(lines)
+    return f"""
+
+## Available Skills
+You have access to specialized tool sets called "skills". To use one, call `activate_skill` with the skill name. Once activated, its tools become available for the rest of our conversation.
+
+{skills_text}
+
+Only activate skills when you need their tools. Memory tools are always available without activation."""
+
+
+def _load_personality() -> str:
+    """Load the agent's personality from disk, if it exists."""
+    import os
+    path = getattr(config, "PERSONALITY_FILE", "")
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path) as f:
+            text = f.read().strip()
+        if text:
+            return f"\n\n## Personality\n{text}"
+    except Exception:
+        pass
+    return ""
+
+
 def build_system_prompt() -> str:
     from datetime import datetime
     now = datetime.now()
+    skill_manifest = _build_skill_manifest() if config.TOOLS_ENABLED else ""
+    personality = _load_personality()
     return f"""You are Second Brain, a general-purpose AI assistant with persistent memory and tool capabilities.
-
+{personality}
 Current date and time: {now.strftime("%A, %B %d, %Y at %I:%M %p")}.
 
 You have access to several types of memory:
@@ -34,6 +71,7 @@ You have access to several types of memory:
 
 You also have access to tools that let you interact with the filesystem and other services.
 When a task requires reading files, listing directories, or other operations, use the available tools rather than asking the user to do it manually.
+{skill_manifest}
 
 ## Response Style
 - Be concise. Answer exactly what was asked, nothing more.
@@ -41,10 +79,6 @@ When a task requires reading files, listing directories, or other operations, us
 - Do not editorialize, connect dots, or add commentary unless asked.
 - Retrieved memories are context for YOU, not content to dump on the user.
 
-## Memory Storage Rules
-Only use store_memory when:
-- The user EXPLICITLY asks you to remember something ("remember that...", "keep in mind...")
-- The user shares a core identity fact for the FIRST time (name, job, company)
 
 Do NOT use store_memory for:
 - Things the user mentions casually in conversation
@@ -52,10 +86,7 @@ Do NOT use store_memory for:
 - Anything you've already stored (check with search_memory first if unsure)
 - Conversation topics, questions, or requests
 
-When in doubt, do NOT store. Less is more. The user can always ask you to remember something explicitly.
-
-If retrieved memories are relevant to the current question, weave them into your response.
-If they're not relevant, ignore them."""
+"""
 
 
 EXTRACTION_PROMPT = """Extract ONLY durable facts from this conversation that would be useful in a conversation 2 weeks from now.
@@ -74,6 +105,7 @@ EXTRACTION_PROMPT = """Extract ONLY durable facts from this conversation that wo
 - Anything the assistant said or suggested
 - Questions, requests, or tasks from this session
 - Anything that is only meaningful right now, not in 2 weeks
+- Personality, tone, style, sarcasm, or communication preferences (these are stored separately in the personality file, not in memories)
 
 ## The test
 For each candidate fact, ask: "If I told this to someone with no context, would it help them work with this user?" If no, skip it.

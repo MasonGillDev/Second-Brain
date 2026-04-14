@@ -97,7 +97,7 @@ class VectorStore:
                 continue
 
             doc_id = results["ids"][0][i]
-            meta = results["metadatas"][0][i] if results["metadatas"] else {}
+            meta = (results["metadatas"][0][i] if results["metadatas"] else {}) or {}
 
             # Track access
             access_count = meta.get("access_count", 0) + 1
@@ -146,7 +146,7 @@ class VectorStore:
             memories.append({
                 "id": results["ids"][i],
                 "text": results["documents"][i],
-                "metadata": results["metadatas"][i],
+                "metadata": results["metadatas"][i] or {},
             })
         return memories
 
