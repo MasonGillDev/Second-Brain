@@ -11,6 +11,7 @@ Responsible for:
 import json
 import anthropic
 import config
+from keychain import get_secret
 from memory.conversation import ConversationMemory, estimate_tokens
 from memory.vector_store import VectorStore
 from memory.ingestion import ingest_documents
@@ -124,7 +125,7 @@ class MemoryManager:
     def __init__(self):
         self.conversation = ConversationMemory()
         self.vector_store = VectorStore()
-        self._llm_client = anthropic.Anthropic()
+        self._llm_client = anthropic.Anthropic(api_key=get_secret("anthropic-api-key"))
         self.maintenance = MemoryMaintenance(self.vector_store, self._llm_client)
         self._exchange_count = 0
         self._ingest_docs_on_start()
@@ -146,9 +147,7 @@ class MemoryManager:
         if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.EXTRACT_EVERY_N_EXCHANGES == 0:
             self.extract_memories()
 
-        # Run consolidation every N exchanges
-        if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.CONSOLIDATE_EVERY_N_EXCHANGES == 0:
-            self.consolidate_memories()
+        
 
     def remember(self, text: str, memory_type: str = "long_term", metadata: dict | None = None) -> str:
         """Store something in long-term memory (with dedup)."""
@@ -283,6 +282,13 @@ class MemoryManager:
         if procedural:
             items = "\n".join(f"- {m['text']}" for m in procedural)
             sections.append(f"### Relevant Procedures\n{items}")
+
+        # Reference memories (lower priority, higher threshold)
+        reference = self.vector_store.query("reference", query, top_k=config.RETRIEVAL_TOP_K_REFERENCE)
+        reference = [m for m in reference if m["relevance"] >= config.RETRIEVAL_MIN_RELEVANCE_REFERENCE]
+        if reference:
+            items = "\n".join(f"- {m['text']}" for m in reference)
+            sections.append(f"### Reference Knowledge\n{items}")
 
         # Document memories
         documents = self.vector_store.query("documents", query, top_k=config.RETRIEVAL_TOP_K_DOCUMENTS)

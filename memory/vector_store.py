@@ -33,6 +33,14 @@ class VectorStore:
                 name="documents",
                 metadata={"description": "Ingested markdown documents"},
             ),
+            "reference": self._client.get_or_create_collection(
+                name="reference",
+                metadata={"description": "Reference-tier memories: useful but not daily"},
+            ),
+            "archive": self._client.get_or_create_collection(
+                name="archive",
+                metadata={"description": "Archived memories: outdated or rarely needed"},
+            ),
         }
 
     def add(self, collection_name: str, text: str, metadata: dict | None = None, doc_id: str | None = None):

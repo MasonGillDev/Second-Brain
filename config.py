@@ -39,7 +39,7 @@ BUDGET_WORKING_MEMORY = 0.50      # Recent messages (the live conversation)
 WORKING_MEMORY_MIN_MESSAGES = 5
 
 # How many messages to accumulate before triggering a summarization pass
-SUMMARIZE_EVERY_N_MESSAGES = 8
+SUMMARIZE_EVERY_N_MESSAGES = 15
 
 # Max tokens for the rolling summary itself
 MAX_SUMMARY_TOKENS = int(TOTAL_CONTEXT_BUDGET * BUDGET_SUMMARY)
@@ -110,22 +110,22 @@ EXTRACT_EVERY_N_EXCHANGES = 7
 DEDUP_TOP_K = 3
 
 # Dedup: minimum relevance score to consider a memory a potential duplicate
-DEDUP_MIN_RELEVANCE = 0.35
+DEDUP_MIN_RELEVANCE = 0.5
 
 # Consolidation: how often to run (in exchanges)
-CONSOLIDATE_EVERY_N_EXCHANGES = 25
+CONSOLIDATE_EVERY_N_EXCHANGES = 100
 
 # Consolidation: also run on shutdown
-CONSOLIDATE_ON_SHUTDOWN = True
+CONSOLIDATE_ON_SHUTDOWN = False
 
 # Consolidation: max memories to process in one batch (cost safety valve)
 CONSOLIDATION_BATCH_LIMIT = 100
 
 # Consolidation: similarity threshold for grouping (0-1, higher = stricter)
-CONSOLIDATION_SIMILARITY_THRESHOLD = 0.30
+CONSOLIDATION_SIMILARITY_THRESHOLD = 0.7
 
 # Consolidation: max memories per cluster (prevents over-merging)
-CONSOLIDATION_MAX_CLUSTER_SIZE = 5
+CONSOLIDATION_MAX_CLUSTER_SIZE = 2
 
 # =============================================================================
 # COST CONTROLS
@@ -170,7 +170,7 @@ LLM_PROVIDER = "claude"
 MCP_SERVERS = {
     "filesystem": {
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "./"],
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "./SecondBrainSandBox"],
         "env": None,
     },
     "calendar": {
@@ -198,6 +198,16 @@ MCP_SERVERS = {
         "args": ["./mcp_servers/imessage_server.py"],
         "env": None,
     },
+    "fetch": {
+        "command": "./venv/bin/python",
+        "args": ["-m", "mcp_server_fetch"],
+        "env": None,
+    },
+    #"slack": {
+     #   "command": "npx",
+     #   "args": ["-y", "@anthropics/mcp-server-slack"],
+     #   "env": {"SLACK_BOT_TOKEN": "YOUR_SLACK_BOT_TOKEN"},
+    #},
 }
 
 # Allowlist of tools per server. Only these tools get exposed to the model.
@@ -224,6 +234,8 @@ SKILL_MANIFEST = {
     "scheduler": "Create and manage recurring scheduled tasks (cron-like jobs, daily reminders).",
     "code": "Delegate coding tasks to Claude Code — research codebases, write/edit code, and manage background processes (start/stop dev servers, etc.).",
     "imessage": "Read iMessage history — get recent messages, search conversations, check unread messages.",
+    "fetch": "Fetch a URL and extract its contents as markdown. Read web pages, articles, and documentation.",
+   # "slack": "Read and send Slack messages, list channels, and search message history.", WIll IMPLEMENT LATER
 }
 
 # These servers' tools are ALWAYS sent without needing activation.
@@ -235,3 +247,35 @@ MAX_TOOL_ROUNDS = 7
 
 # Telegram user ID for scheduled task notifications
 TELEGRAM_NOTIFY_USER_ID = 6080568335
+
+# =============================================================================
+# SLEEP AGENT (memory consolidation)
+# =============================================================================
+
+# Master toggle
+SLEEP_AGENT_ENABLED = True
+
+# Model — Haiku keeps costs low for reorganization work
+SLEEP_MODEL = SUMMARIZATION_MODEL
+
+# Recursive similarity search
+SLEEP_SEARCH_DEPTH = 3               # max hops from each seed memory
+SLEEP_SIMILARITY_DECAY = 0.85        # relevance *= this per depth level
+SLEEP_TOP_K_PER_HOP = 5              # results per query at each depth
+SLEEP_MIN_RELEVANCE = 0.25           # minimum effective relevance after decay
+SLEEP_MAX_CONTEXT_MEMORIES = 35      # hard cap on memories sent to LLM
+SLEEP_MAX_DOCUMENT_MEMORIES = 5      # hard cap on read-only document chunks
+SLEEP_MIN_DOCUMENT_RELEVANCE = 0.45  # documents must be highly relevant
+SLEEP_SEED_LOOKBACK_HOURS = 24       # "today" = memories from last N hours
+SLEEP_MAX_SEEDS = 15                 # max seed memories to start from
+
+# Agent loop
+SLEEP_MAX_TOOL_ROUNDS = 15           # max LLM rounds per run
+SLEEP_MAX_LLM_CALLS = 20             # hard cap on total API calls
+
+# Logging
+SLEEP_LOG_DIR = "./memory/data/sleep_logs"
+
+# Reference tier retrieval (added to auto-retrieval alongside long_term)
+RETRIEVAL_TOP_K_REFERENCE = 2
+RETRIEVAL_MIN_RELEVANCE_REFERENCE = 0.45

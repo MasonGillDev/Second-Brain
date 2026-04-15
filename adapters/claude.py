@@ -8,11 +8,12 @@ Anthropic's API for tool_use / tool_result messages.
 import anthropic
 import config
 from adapters.base import LLMAdapter, AdapterResponse, ToolCall, Usage
+from keychain import get_secret
 
 
 class ClaudeAdapter(LLMAdapter):
     def __init__(self):
-        self._client = anthropic.AsyncAnthropic()
+        self._client = anthropic.AsyncAnthropic(api_key=get_secret("anthropic-api-key"))
 
     def format_tools(self, tools: list[dict]) -> list[dict]:
         """

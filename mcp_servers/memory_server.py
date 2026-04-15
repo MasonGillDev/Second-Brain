@@ -11,11 +11,9 @@ import os
 # Add project root to path so we can import memory modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import anthropic
 import config
+from keychain import get_secret
 from mcp.server.fastmcp import FastMCP
 from memory.vector_store import VectorStore
 from memory.maintenance import MemoryMaintenance
@@ -23,7 +21,7 @@ from memory.maintenance import MemoryMaintenance
 mcp = FastMCP("memory")
 
 _vector_store = VectorStore()
-_maintenance = MemoryMaintenance(_vector_store, anthropic.Anthropic())
+_maintenance = MemoryMaintenance(_vector_store, anthropic.Anthropic(api_key=get_secret("anthropic-api-key")))
 
 
 @mcp.tool()

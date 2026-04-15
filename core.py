@@ -5,9 +5,6 @@ Handles the tool-use loop, memory, and LLM communication.
 Interfaces just call `agent.process(message)` and get a response.
 """
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import asyncio
 import os
 import config

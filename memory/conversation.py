@@ -61,8 +61,8 @@ class ConversationMemory:
         if self.rolling_summary:
             existing_summary_section = (
                 f"\n## Existing Summary\n{self.rolling_summary}\n\n"
-                "Integrate the new messages into this existing summary. "
-                "Update any sections that have changed. Remove information that is no longer relevant.\n"
+                "Integrate the new messages into a new summary. "
+                "Update any sections that have changed. Remove information that is no longer relevant. Keep it consise and relevent.\n"
             )
 
         prompt = f"""Summarize the following conversation messages into a structured summary.{existing_summary_section}

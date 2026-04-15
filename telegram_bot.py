@@ -8,20 +8,15 @@ Usage:
     python telegram_bot.py
 """
 
-import os
 import asyncio
-from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 import config
 from core import AgentCore
+from keychain import get_secret
 
-load_dotenv()
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise RuntimeError("TELEGRAM_BOT_TOKEN not set in .env")
+TELEGRAM_TOKEN = get_secret("telegram-bot-token")
 
 # Shared agent instance
 agent: AgentCore | None = None
@@ -39,6 +34,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Just send me a message and I'll respond with full memory and tool access.\n\n"
         "Commands:\n"
         "/remember <text> — Store in long-term memory\n"
+        "/memories — List all stored memories\n"
         "/stats — Memory statistics\n"
         "/clear — Clear conversation history\n"
         "/cancel — Stop all running tool processes"
@@ -140,8 +136,17 @@ def main():
         response = await agent.process("/stats")
         await update.message.reply_text(response)
 
+    async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        response = await agent.process("/memories")
+        if len(response) <= 4096:
+            await update.message.reply_text(response)
+        else:
+            for i in range(0, len(response), 4096):
+                await update.message.reply_text(response[i:i + 4096])
+
     app.add_handler(CommandHandler("remember", remember_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("memories", memories_command))
 
     # Run the bot
     app.run_polling()

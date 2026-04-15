@@ -10,13 +10,9 @@ Usage:
     python scheduler.py
 """
 
-import os
 import json
 import asyncio
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
 
 import config
 
@@ -95,11 +91,15 @@ async def send_to_bot(prompt: str, task_name: str):
     """
     import httpx
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    from keychain import get_secret
+    try:
+        token = get_secret("telegram-bot-token")
+    except RuntimeError:
+        token = None
     user_id = config.TELEGRAM_NOTIFY_USER_ID
 
     if not token or not user_id:
-        print("  [scheduler] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_NOTIFY_USER_ID")
+        print("  [scheduler] Missing telegram-bot-token in Keychain or TELEGRAM_NOTIFY_USER_ID")
         return
 
     # First, notify the user that a scheduled task is running
