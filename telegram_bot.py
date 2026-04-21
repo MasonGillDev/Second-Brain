@@ -8,6 +8,7 @@ Usage:
     python telegram_bot.py
 """
 
+import base64
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -88,6 +89,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error: {e}")
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages (with optional caption)."""
+    if not update.message or not update.message.photo:
+        return
+
+    if ALLOWED_USER_IDS and update.message.from_user.id not in ALLOWED_USER_IDS:
+        await update.message.reply_text("Unauthorized.")
+        return
+
+    await update.message.chat.send_action("typing")
+
+    try:
+        # Get the highest resolution photo
+        photo = update.message.photo[-1]
+        file = await photo.get_file()
+        photo_bytes = await file.download_as_bytearray()
+
+        # Convert to base64
+        b64_data = base64.b64encode(bytes(photo_bytes)).decode("utf-8")
+        images = [{"data": b64_data, "media_type": "image/jpeg"}]
+
+        # Use caption as text, or default
+        text = (update.message.caption or "What's in this image?").strip()
+
+        response = await agent.process(text, images=images)
+
+        if len(response) <= 4096:
+            await update.message.reply_text(response)
+        else:
+            for i in range(0, len(response), 4096):
+                await update.message.reply_text(response[i:i + 4096])
+
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+
+
 async def post_init(application: Application):
     """Called after the bot app is initialized — start the agent."""
     global agent
@@ -123,6 +160,7 @@ def main():
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # /remember and /stats are handled by AgentCore.process() via the text handler
     # but Telegram treats /remember as a command, so we need a handler for it

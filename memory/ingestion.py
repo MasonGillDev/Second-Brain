@@ -1,8 +1,8 @@
 """
-Markdown document ingestion.
+Document ingestion.
 
-Watches ./memory/docs/ for .md files, chunks them by heading or fixed size,
-and stores them in the ChromaDB documents collection.
+Watches ./memory/docs/ for .md and .docx files, chunks them by heading or
+fixed size, and stores them in the ChromaDB documents collection.
 """
 
 import os
@@ -10,6 +10,30 @@ import hashlib
 import re
 import config
 from memory.vector_store import VectorStore
+
+SUPPORTED_EXTENSIONS = {".md", ".docx"}
+
+
+def _read_docx(filepath: str) -> str:
+    """Extract text from a .docx file as markdown-like text."""
+    from docx import Document
+    doc = Document(filepath)
+    lines = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            lines.append("")
+            continue
+        style = para.style.name.lower()
+        if "heading 1" in style:
+            lines.append(f"# {text}")
+        elif "heading 2" in style:
+            lines.append(f"## {text}")
+        elif "heading 3" in style:
+            lines.append(f"### {text}")
+        else:
+            lines.append(text)
+    return "\n\n".join(lines)
 
 
 def chunk_by_heading(text: str, source: str) -> list[dict]:
@@ -80,8 +104,8 @@ def chunk_fixed_size(text: str, source: str) -> list[dict]:
 
 def file_hash(filepath: str) -> str:
     """Get a hash of file contents for change detection."""
-    with open(filepath, "r") as f:
-        return hashlib.md5(f.read().encode()).hexdigest()
+    with open(filepath, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 
 def ingest_documents(vector_store: VectorStore, docs_dir: str | None = None) -> int:
@@ -97,7 +121,8 @@ def ingest_documents(vector_store: VectorStore, docs_dir: str | None = None) -> 
     total_added = 0
 
     for filename in os.listdir(docs_dir):
-        if not filename.endswith(".md"):
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
             continue
 
         filepath = os.path.join(docs_dir, filename)
@@ -114,8 +139,11 @@ def ingest_documents(vector_store: VectorStore, docs_dir: str | None = None) -> 
         vector_store.delete_by_metadata("documents", {"source_file": filename})
 
         # Read and chunk the file
-        with open(filepath, "r") as f:
-            content = f.read()
+        if ext == ".docx":
+            content = _read_docx(filepath)
+        else:
+            with open(filepath, "r") as f:
+                content = f.read()
 
         chunks = chunk_by_heading(content, filename)
         if not chunks:

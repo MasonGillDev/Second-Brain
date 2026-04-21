@@ -79,7 +79,11 @@ When a task requires reading files, listing directories, or other operations, us
 - Do not volunteer extra information the user didn't ask for.
 - Do not editorialize, connect dots, or add commentary unless asked.
 - Retrieved memories are context for YOU, not content to dump on the user.
+- IMPORTANT: Check the "Retrieved Memories" section above BEFORE using search_memory. Only search if the answer is NOT already in the retrieved context.
 
+
+## Personality
+You have a personality description that shapes your voice and tone. You can view it with `get_personality` and evolve it with `update_personality` as you learn the user's preferences. Always read the current personality first before updating.
 
 Do NOT use store_memory for:
 - Things the user mentions casually in conversation
@@ -117,13 +121,14 @@ For each candidate fact, ask: "If I told this to someone with no context, would 
 ## Recent Messages
 {messages}
 
-Output a JSON array. Each item: {{"text": "standalone fact", "category": "user_fact|preference|decision|project_context"}}
+Output a JSON array. Each item: {{"text": "standalone fact", "category": "user_fact|preference|decision|project_context|general|<custom>"}}
+Use a custom category when the fact doesn't fit the standard ones (e.g., "health", "finance", "recipe", "contact").
 If nothing passes the test, return: []"""
 
 
 class MemoryManager:
-    def __init__(self):
-        self.conversation = ConversationMemory()
+    def __init__(self, session_file: str | None = None):
+        self.conversation = ConversationMemory(session_file=session_file)
         self.vector_store = VectorStore()
         self._llm_client = anthropic.Anthropic(api_key=get_secret("anthropic-api-key"))
         self.maintenance = MemoryMaintenance(self.vector_store, self._llm_client)
@@ -146,8 +151,6 @@ class MemoryManager:
         # Run extraction every N exchanges
         if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.EXTRACT_EVERY_N_EXCHANGES == 0:
             self.extract_memories()
-
-        
 
     def remember(self, text: str, memory_type: str = "long_term", metadata: dict | None = None) -> str:
         """Store something in long-term memory (with dedup)."""
@@ -289,6 +292,18 @@ class MemoryManager:
         if reference:
             items = "\n".join(f"- {m['text']}" for m in reference)
             sections.append(f"### Reference Knowledge\n{items}")
+
+        # Code context (docstrings, comments from ingested codebases)
+        if "code_context" in self.vector_store.collections:
+            code = self.vector_store.query("code_context", query, top_k=config.RETRIEVAL_TOP_K_CODE)
+            code = [m for m in code if m["relevance"] >= config.RETRIEVAL_MIN_RELEVANCE_CODE]
+            if code:
+                items = []
+                for m in code:
+                    fp = m["metadata"].get("file_path", "")
+                    line = m["metadata"].get("line_number", "")
+                    items.append(f"- [{fp}:{line}] {m['text']}")
+                sections.append(f"### Relevant Code Context\n" + "\n".join(items))
 
         # Document memories
         documents = self.vector_store.query("documents", query, top_k=config.RETRIEVAL_TOP_K_DOCUMENTS)

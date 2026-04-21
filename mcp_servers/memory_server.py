@@ -34,7 +34,8 @@ def store_memory(text: str, category: str = "general") -> str:
         text: The fact to store. Must be concise and standalone.
               Good: "Mason prefers Go for backend development"
               Bad: "The user said they like Go"
-        category: One of: user_fact, preference, decision, project_context, general
+        category: Common categories: user_fact, preference, decision, project_context, general.
+                  You can also create custom categories as needed (e.g., "recipe", "health", "finance").
     """
     result = _maintenance.dedup_and_store("long_term", text, {
         "type": "agent_stored",

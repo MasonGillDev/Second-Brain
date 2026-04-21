@@ -18,6 +18,7 @@ class ToolRouter:
         self._clients: dict[str, MCPClient] = {}
         self._tools: list[dict] = []
         self._activated_skills: set[str] = set()
+        self.disabled_servers: set[str] = set()
 
     async def start(self):
         """Start all configured MCP servers and discover their tools."""
@@ -46,8 +47,12 @@ class ToolRouter:
                 if config.LOG_TOKEN_USAGE:
                     tool_names = [t["name"] for t in tools]
                     print(f"  [mcp] {name}: {len(tools)} tools — {tool_names[:5]}{'...' if len(tools) > 5 else ''}")
-            except Exception as e:
+            except (Exception, BaseException) as e:
                 print(f"  [mcp] Failed to start '{name}': {e}")
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
 
     async def shutdown(self):
         """Stop all MCP servers."""
@@ -65,7 +70,7 @@ class ToolRouter:
         Returns the activate_skill meta-tool plus any active skill tools.
         """
         always = set(getattr(config, "ALWAYS_INCLUDE_SERVERS", []))
-        active_servers = always | self._activated_skills
+        active_servers = (always | self._activated_skills) - self.disabled_servers
 
         skill_tools = [
             t for t in self._tools

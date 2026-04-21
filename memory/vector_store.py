@@ -41,6 +41,10 @@ class VectorStore:
                 name="archive",
                 metadata={"description": "Archived memories: outdated or rarely needed"},
             ),
+            "code_context": self._client.get_or_create_collection(
+                name="code_context",
+                metadata={"description": "Code comments, docstrings, and signatures"},
+            ),
         }
 
     def add(self, collection_name: str, text: str, metadata: dict | None = None, doc_id: str | None = None):

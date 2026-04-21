@@ -145,7 +145,7 @@ def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
         sel = selectors.DefaultSelector()
         sel.register(proc.stdout, selectors.EVENT_READ)
 
-        idle_timeout = 120  # kill if no output for 2 minutes
+        idle_timeout = 240  # kill if no output for 2 minutes
         total_timeout = max_turns * 60  # rough cap based on turns
         start_time = time.time()
 

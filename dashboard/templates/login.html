@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Second Brain — Login</title>
+    <script>
+        var saved = localStorage.getItem('sb-theme');
+        var theme = saved ? saved : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap');
+
+        :root {
+            --bg-base: #F8FAFC;
+            --bg-surface: #FFFFFF;
+            --bg-raised: #F1F5F9;
+            --text-primary: #0F172A;
+            --text-secondary: #475569;
+            --text-tertiary: #94A3B8;
+            --text-placeholder: #CBD5E1;
+            --accent: #2563EB;
+            --accent-hover: #1D4ED8;
+            --accent-text: #1E40AF;
+            --border: #E2E8F0;
+            --border-light: #CBD5E1;
+            --red: #EF4444;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --radius-xl: 16px;
+            --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.07);
+            --shadow-lg: 0 12px 40px rgba(15, 23, 42, 0.13);
+            --font-sans: 'DM Sans', -apple-system, sans-serif;
+            --font-mono: 'DM Mono', 'Menlo', monospace;
+            --font-serif: 'Instrument Serif', Georgia, serif;
+        }
+
+        [data-theme="dark"] {
+            --bg-base: #000000;
+            --bg-surface: #111111;
+            --bg-raised: #1A1A1A;
+            --text-primary: #FFFFFF;
+            --text-secondary: rgba(255,255,255,0.65);
+            --text-tertiary: rgba(255,255,255,0.38);
+            --text-placeholder: rgba(255,255,255,0.22);
+            --accent: #2563EB;
+            --accent-hover: #3B82F6;
+            --accent-text: #60A5FA;
+            --border: rgba(255,255,255,0.07);
+            --border-light: rgba(255,255,255,0.11);
+            --red: #EF4444;
+            --shadow-sm: 0 2px 8px rgba(0,0,0,0.6);
+            --shadow-lg: 0 12px 40px rgba(0,0,0,0.75);
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html {
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-base);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .login-card {
+            width: 400px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 48px 40px;
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--accent);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-family: var(--font-serif);
+            font-style: italic;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .logo-text {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+        }
+
+        h1 {
+            font-size: 22px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+            letter-spacing: -0.03em;
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: var(--text-tertiary);
+            margin-bottom: 32px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+        }
+
+        input[type="password"] {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-raised);
+            border: 1px solid var(--border-light);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        input[type="password"]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+        }
+
+        input[type="password"]::placeholder {
+            color: var(--text-placeholder);
+        }
+
+        button {
+            width: 100%;
+            margin-top: 24px;
+            padding: 10px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: var(--radius-md);
+            font-family: var(--font-sans);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        button:hover { background: var(--accent-hover); }
+        button:active { transform: scale(0.98); }
+
+        .error {
+            margin-top: 16px;
+            padding: 10px 14px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: var(--radius-md);
+            font-size: 13px;
+            color: var(--red);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="logo">
+            <span class="logo-icon">S</span>
+            <span class="logo-text">Second Brain</span>
+        </div>
+        <h1>Mission Control</h1>
+        <p class="subtitle">Enter your access code to continue</p>
+        <form method="POST" action="/login">
+            <label for="password">Access Code</label>
+            <input type="password" id="password" name="password" placeholder="Enter password" autofocus required>
+            <button type="submit">Authenticate</button>
+        </form>
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+    </div>
+</body>
+</html>

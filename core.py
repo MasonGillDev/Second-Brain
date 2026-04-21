@@ -23,19 +23,22 @@ def create_adapter():
 
 
 class AgentCore:
-    def __init__(self, enable_tools: bool = True):
+    def __init__(self, enable_tools: bool = True, session_file: str | None = None):
         """
         Args:
             enable_tools: If False, skip MCP server startup (for lightweight
                           processes like the scheduler that only need LLM + memory).
+            session_file: Optional path to conversation session file.
+                          Defaults to config.SESSION_FILE.
         """
-        self.memory = MemoryManager()
+        self.memory = MemoryManager(session_file=session_file)
         self.router = ToolRouter()
         self.adapter = create_adapter()
         self._enable_tools = enable_tools and config.TOOLS_ENABLED
         self._started = False
         self._cancelled = False
         self._active_task: asyncio.Task | None = None
+        self.on_tool_call = None
 
     async def start(self):
         """Start MCP servers. Call once before processing messages."""
@@ -79,11 +82,20 @@ class AgentCore:
         all_tools = self.router.get_tools()
         return self.adapter.format_tools(all_tools) if all_tools else None
 
-    async def process(self, user_input: str) -> str:
+    async def process(self, user_input: str, images: list[dict] | None = None) -> str:
         """
         Process a user message and return the agent's response.
         Handles memory, tool routing, and the multi-round tool-use loop.
+
+        Args:
+            user_input: The user's text message.
+            images: Optional list of image dicts with keys:
+                    - "data": base64-encoded image data
+                    - "media_type": e.g. "image/png", "image/jpeg"
         """
+        # Reload config overrides (picks up dashboard changes without restart)
+        config.reload_overrides()
+
         # Handle /remember command from any interface
         if user_input.startswith("/remember "):
             text = user_input[10:].strip()
@@ -98,6 +110,9 @@ class AgentCore:
         if user_input.strip() == "/memories":
             return self._format_memories()
 
+        # Store images for this request (used when building messages)
+        self._pending_images = images
+
         # Add user message to conversation memory
         self.memory.add_user_message(user_input)
 
@@ -109,6 +124,27 @@ class AgentCore:
 
         # Build context
         system_prompt, messages = self.memory.build_messages(user_input)
+        self._last_system_prompt = system_prompt
+        self._last_messages = messages
+
+        # Inject images into the last user message if present
+        if self._pending_images:
+            for msg in reversed(messages):
+                if msg["role"] == "user" and isinstance(msg["content"], str):
+                    content_blocks = []
+                    for img in self._pending_images:
+                        content_blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img["media_type"],
+                                "data": img["data"],
+                            },
+                        })
+                    content_blocks.append({"type": "text", "text": msg["content"]})
+                    msg["content"] = content_blocks
+                    break
+            self._pending_images = None
 
         # Build initial tool set (always-on + meta-tools, no activated skills yet)
         tools = self._build_tools()
@@ -143,6 +179,9 @@ class AgentCore:
                     if config.LOG_TOKEN_USAGE:
                         print(f"  [skill] Activated: {skill_name}")
                     continue
+
+                if self.on_tool_call:
+                    self.on_tool_call(tc.name, tc.arguments)
 
                 if config.LOG_TOKEN_USAGE:
                     args_preview = str(tc.arguments)[:80]

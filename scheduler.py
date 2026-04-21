@@ -12,6 +12,7 @@ Usage:
 
 import json
 import asyncio
+import os
 from datetime import datetime
 
 import config
@@ -29,6 +30,19 @@ def load_tasks() -> list[dict]:
 def save_tasks(tasks: list[dict]):
     with open(TASKS_FILE, "w") as f:
         json.dump(tasks, f, indent=2)
+
+
+def is_one_time_schedule(schedule: str) -> bool:
+    """Check if a cron schedule can only fire once (all time/date fields are fixed)."""
+    parts = schedule.strip().split()
+    if len(parts) != 5:
+        return False
+    minute, hour, day, month, _ = parts
+    # If minute, hour, day, and month are all plain integers, it's one-time
+    for field in (minute, hour, day, month):
+        if not field.isdigit():
+            return False
+    return True
 
 
 def cron_matches(schedule: str, now: datetime) -> bool:
@@ -126,13 +140,32 @@ async def send_to_bot(prompt: str, task_name: str):
 
     # Import here to avoid circular imports at module level
     from core import AgentCore
+    from memory.conversation import ConversationMemory
 
-    agent = AgentCore(enable_tools=True)
+    # Scheduler uses its own session so it doesn't load Telegram context
+    agent = AgentCore(
+        enable_tools=True,
+        session_file="./memory/data/session_scheduler.json",
+    )
     await agent.start()
 
     try:
         response = await agent.process(prompt)
         print(f"  [scheduler] Response: {response[:100]}...")
+
+        # Inject a summary into the Telegram session so the user can ask about it
+        try:
+            telegram_conv = ConversationMemory()  # loads default session.json
+            summary = response[:500] if len(response) > 500 else response
+            telegram_conv.add_message(
+                "assistant",
+                f"[Scheduled task '{task_name}' ran at {datetime.now().strftime('%I:%M %p')}]\n"
+                f"Prompt: {prompt[:200]}\n"
+                f"Result: {summary}",
+            )
+            telegram_conv.save_session()
+        except Exception as e2:
+            print(f"  [scheduler] Failed to inject into Telegram session: {e2}")
 
         # Send the response to Telegram
         chunks = [response[i:i+4096] for i in range(0, len(response), 4096)]
@@ -193,8 +226,12 @@ async def main():
                 # Run the task
                 await run_task(task)
 
-                # Update last_run
-                task["last_run"] = now.isoformat()
+                # Auto-delete one-time schedules, otherwise update last_run
+                if is_one_time_schedule(task["schedule"]):
+                    tasks = [t for t in tasks if t["id"] != task["id"]]
+                    print(f"  [scheduler] Auto-deleted one-time task: {task['name']}")
+                else:
+                    task["last_run"] = now.isoformat()
                 save_tasks(tasks)
 
             await asyncio.sleep(60)

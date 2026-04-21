@@ -10,19 +10,38 @@ import json
 import os
 import anthropic
 import config
+from keychain import get_secret
 
 
-def estimate_tokens(text: str) -> int:
+def _content_to_text(content) -> str:
+    """Extract plain text from a message content field (string or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block["text"])
+            elif isinstance(block, dict) and block.get("type") == "image":
+                parts.append("[image]")
+        return " ".join(parts)
+    return str(content)
+
+
+def estimate_tokens(text) -> int:
     """Rough token estimate: words * multiplier."""
+    if not isinstance(text, str):
+        text = _content_to_text(text)
     return int(len(text.split()) * config.TOKEN_ESTIMATION_MULTIPLIER)
 
 
 class ConversationMemory:
-    def __init__(self):
+    def __init__(self, session_file: str | None = None):
         self.messages: list[dict] = []
         self.rolling_summary: str = ""
         self.total_messages_processed: int = 0
-        self._client = anthropic.Anthropic()
+        self._session_file = session_file or config.SESSION_FILE
+        self._client = anthropic.Anthropic(api_key=get_secret("anthropic-api-key"))
         self._load_session()
 
     @property
@@ -31,7 +50,7 @@ class ConversationMemory:
 
     @property
     def messages_token_estimate(self) -> int:
-        return sum(estimate_tokens(m["content"]) for m in self.messages)
+        return sum(estimate_tokens(_content_to_text(m["content"])) for m in self.messages)
 
     def add_message(self, role: str, content: str):
         """Add a message and trigger summarization if needed."""
@@ -55,7 +74,8 @@ class ConversationMemory:
         conversation_text = ""
         for msg in to_summarize:
             role_label = "User" if msg["role"] == "user" else "Assistant"
-            conversation_text += f"{role_label}: {msg['content']}\n\n"
+            text = _content_to_text(msg["content"])
+            conversation_text += f"{role_label}: {text}\n\n"
 
         existing_summary_section = ""
         if self.rolling_summary:
@@ -129,18 +149,18 @@ Be concise but preserve all important details. Use bullet points. Do not include
             "rolling_summary": self.rolling_summary,
             "total_messages_processed": self.total_messages_processed,
         }
-        os.makedirs(os.path.dirname(config.SESSION_FILE), exist_ok=True)
-        with open(config.SESSION_FILE, "w") as f:
+        os.makedirs(os.path.dirname(self._session_file), exist_ok=True)
+        with open(self._session_file, "w") as f:
             json.dump(session, f, indent=2)
         if config.LOG_TOKEN_USAGE:
             print(f"  [session] Saved {len(self.messages)} messages + summary to disk")
 
     def _load_session(self):
         """Load conversation state from disk if it exists."""
-        if not os.path.exists(config.SESSION_FILE):
+        if not os.path.exists(self._session_file):
             return
         try:
-            with open(config.SESSION_FILE, "r") as f:
+            with open(self._session_file, "r") as f:
                 session = json.load(f)
             self.messages = session.get("messages", [])
             self.rolling_summary = session.get("rolling_summary", "")
@@ -155,8 +175,8 @@ Be concise but preserve all important details. Use bullet points. Do not include
         self.messages = []
         self.rolling_summary = ""
         self.total_messages_processed = 0
-        if os.path.exists(config.SESSION_FILE):
-            os.remove(config.SESSION_FILE)
+        if os.path.exists(self._session_file):
+            os.remove(self._session_file)
 
     def get_stats(self) -> dict:
         return {

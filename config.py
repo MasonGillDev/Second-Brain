@@ -63,7 +63,7 @@ RETRIEVAL_MIN_RELEVANCE = 0.3
 
 # Minimum word count in a user message to trigger memory retrieval.
 # Short messages like "yes", "ok", "thanks" skip retrieval entirely to save tokens.
-RETRIEVAL_MIN_WORDS = 3
+RETRIEVAL_MIN_WORDS = 2
 
 # Messages matching these patterns skip retrieval regardless of length.
 RETRIEVAL_SKIP_PATTERNS = [
@@ -84,6 +84,23 @@ CHUNK_SIZE = 1000
 
 # Overlap between chunks (helps preserve context at boundaries)
 CHUNK_OVERLAP = 200
+
+# =============================================================================
+# CODE INGESTION
+# =============================================================================
+
+# Minimum character length for a comment to be worth storing
+CODE_INGEST_MIN_COMMENT_LENGTH = 20
+
+# Minimum consecutive comment lines to form a "block" worth storing
+CODE_INGEST_MIN_COMMENT_LINES = 2
+
+# Max file size to ingest (skip huge generated files)
+CODE_INGEST_MAX_FILE_SIZE = 100_000  # 100KB
+
+# Retrieval settings for code_context collection
+RETRIEVAL_TOP_K_CODE = 3
+RETRIEVAL_MIN_RELEVANCE_CODE = 0.38
 
 # =============================================================================
 # MEMORY IMPORTANCE
@@ -203,11 +220,11 @@ MCP_SERVERS = {
         "args": ["-m", "mcp_server_fetch"],
         "env": None,
     },
-    #"slack": {
-     #   "command": "npx",
-     #   "args": ["-y", "@anthropics/mcp-server-slack"],
-     #   "env": {"SLACK_BOT_TOKEN": "YOUR_SLACK_BOT_TOKEN"},
-    #},
+    "music": {
+        "command": "./venv/bin/python",
+        "args": ["./mcp_servers/music_server.py"],
+        "env": None,
+    },
 }
 
 # Allowlist of tools per server. Only these tools get exposed to the model.
@@ -235,7 +252,7 @@ SKILL_MANIFEST = {
     "code": "Delegate coding tasks to Claude Code — research codebases, write/edit code, and manage background processes (start/stop dev servers, etc.).",
     "imessage": "Read iMessage history — get recent messages, search conversations, check unread messages.",
     "fetch": "Fetch a URL and extract its contents as markdown. Read web pages, articles, and documentation.",
-   # "slack": "Read and send Slack messages, list channels, and search message history.", WIll IMPLEMENT LATER
+    "music": "Control Apple Music — play songs/artists/playlists, pause, skip, search library, get now playing, set volume.",
 }
 
 # These servers' tools are ALWAYS sent without needing activation.
@@ -277,5 +294,29 @@ SLEEP_MAX_LLM_CALLS = 20             # hard cap on total API calls
 SLEEP_LOG_DIR = "./memory/data/sleep_logs"
 
 # Reference tier retrieval (added to auto-retrieval alongside long_term)
-RETRIEVAL_TOP_K_REFERENCE = 2
-RETRIEVAL_MIN_RELEVANCE_REFERENCE = 0.45
+RETRIEVAL_TOP_K_REFERENCE = 3
+RETRIEVAL_MIN_RELEVANCE_REFERENCE = 0.39
+
+# =============================================================================
+# RUNTIME OVERRIDES
+# =============================================================================
+# Load overrides from JSON file (set by dashboard config editor)
+import os as _os
+import json as _json
+_overrides_path = "./memory/data/config_overrides.json"
+
+
+def reload_overrides():
+    """Re-read config overrides from disk. Called before each message."""
+    if _os.path.exists(_overrides_path):
+        try:
+            with open(_overrides_path) as f:
+                for k, v in _json.load(f).items():
+                    if k.isupper():
+                        globals()[k] = v
+        except (_json.JSONDecodeError, OSError):
+            pass
+
+
+# Load on import
+reload_overrides()
