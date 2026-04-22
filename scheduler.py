@@ -150,7 +150,7 @@ async def send_to_bot(prompt: str, task_name: str):
     await agent.start()
 
     try:
-        response = await agent.process(prompt)
+        response = await agent.process(prompt, source="scheduler")
         print(f"  [scheduler] Response: {response[:100]}...")
 
         # Inject a summary into the Telegram session so the user can ask about it

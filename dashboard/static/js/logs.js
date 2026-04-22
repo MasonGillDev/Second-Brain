@@ -1,63 +1,121 @@
-/* Live activity log stream (polling) */
+/* Activity log — reads from SQLite via /api/logs */
 (function() {
     const stream = document.getElementById('log-stream');
-    const autoScroll = document.getElementById('logs-autoscroll');
-    let nextIdx = 0;
+    const liveToggle = document.getElementById('logs-live');
+    const sourceFilter = document.getElementById('logs-source-filter');
+    const levelFilter = document.getElementById('logs-level-filter');
+    let nextId = 0;
     let polling = false;
+    let loaded = false;
 
-    function colorize(text) {
-        if (text.includes('[tool]')) return 'log-line-tool';
-        if (text.includes('[memory]') || text.includes('[extract]')) return 'log-line-memory';
-        if (text.includes('[sleep]') || text.includes('[consolidate]')) return 'log-line-sleep';
-        if (text.includes('[error]') || text.includes('Error') || text.includes('failed')) return 'log-line-error';
-        if (text.includes('[tokens]')) return 'log-line-tokens';
+    function sourceClass(source) {
+        const map = {
+            tool: 'log-line-tool',
+            memory: 'log-line-memory',
+            sleep: 'log-line-sleep',
+            tokens: 'log-line-tokens',
+        };
+        return map[source] || '';
+    }
+
+    function levelClass(level) {
+        if (level === 'error') return 'log-line-error';
+        if (level === 'warning') return 'log-line-warning';
         return '';
     }
 
-    function appendLog(entry) {
-        const line = document.createElement('span');
-        line.className = colorize(entry.text);
-        const ts = new Date(entry.ts * 1000).toLocaleTimeString();
-        line.textContent = `[${ts}] ${entry.text}\n`;
-        stream.appendChild(line);
-        if (autoScroll.checked) {
+    function renderEntry(entry) {
+        const line = document.createElement('div');
+        line.className = 'log-entry ' + (levelClass(entry.level) || sourceClass(entry.source));
+        const ts = new Date(entry.timestamp * 1000).toLocaleTimeString();
+        const badge = entry.source ? `<span class="log-source-tag">${entry.source}</span>` : '';
+        line.innerHTML = `<span class="log-ts">${ts}</span>${badge}<span class="log-msg">${escapeHtml(entry.message)}</span>`;
+        return line;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async function loadInitial() {
+        const source = sourceFilter.value;
+        const level = levelFilter.value;
+        let url = `/api/logs?limit=200`;
+        if (source) url += `&source=${source}`;
+        if (level) url += `&level=${level}`;
+
+        try {
+            const data = await api(url);
+            if (!data || !data.entries) return;
+            stream.innerHTML = '';
+            // Entries come newest-first from the range query, reverse for chronological display
+            const entries = data.entries.reverse();
+            entries.forEach(entry => stream.appendChild(renderEntry(entry)));
+            nextId = data.next_id || 0;
             stream.scrollTop = stream.scrollHeight;
-        }
+            loaded = true;
+        } catch (e) {}
     }
 
     async function poll() {
         if (!polling) return;
         try {
-            const data = await api(`/api/logs?since=${nextIdx}`);
-            if (data && data.entries) {
-                data.entries.forEach(appendLog);
-                nextIdx = data.next;
+            const source = sourceFilter.value;
+            const level = levelFilter.value;
+            let url = `/api/logs?since_id=${nextId}&limit=50`;
+            if (source) url += `&source=${source}`;
+            if (level) url += `&level=${level}`;
+
+            const data = await api(url);
+            if (data && data.entries && data.entries.length > 0) {
+                data.entries.forEach(entry => stream.appendChild(renderEntry(entry)));
+                nextId = data.next_id;
+                if (liveToggle.checked) {
+                    stream.scrollTop = stream.scrollHeight;
+                }
             }
         } catch (e) {}
-        if (polling) setTimeout(poll, 500);
+        if (polling) setTimeout(poll, 1000);
     }
 
-    function startPolling() {
-        if (polling) return;
-        polling = true;
-        poll();
+    function start() {
+        if (!loaded) loadInitial();
+        if (!polling && liveToggle.checked) {
+            polling = true;
+            poll();
+        }
     }
 
-    function stopPolling() {
+    function stop() {
         polling = false;
     }
 
-    // Poll when logs tab is active
-    window.addEventListener('tab:logs', startPolling);
+    window.addEventListener('tab:logs', start);
 
-    // Stop polling when switching away
     document.querySelectorAll('.nav-btn[data-tab]').forEach(btn => {
         btn.addEventListener('click', () => {
-            if (btn.dataset.tab !== 'logs') stopPolling();
+            if (btn.dataset.tab !== 'logs') stop();
         });
     });
 
+    liveToggle.addEventListener('change', () => {
+        if (liveToggle.checked) {
+            polling = true;
+            poll();
+        } else {
+            stop();
+        }
+    });
+
+    // Re-fetch when filters change
+    sourceFilter.addEventListener('change', () => { loaded = false; nextId = 0; loadInitial(); });
+    levelFilter.addEventListener('change', () => { loaded = false; nextId = 0; loadInitial(); });
+
     document.getElementById('logs-clear').addEventListener('click', () => {
         stream.innerHTML = '';
+        nextId = 0;
+        loaded = false;
     });
 })();

@@ -1,8 +1,9 @@
-"""Live activity log stream."""
+"""Activity log endpoints — reads from SQLite."""
 
-import json
-from quart import Blueprint, jsonify, request, current_app
+from datetime import datetime, timedelta
+from quart import Blueprint, jsonify, request
 from dashboard.auth import require_auth
+import db
 
 logs_bp = Blueprint("logs", __name__)
 
@@ -10,13 +11,40 @@ logs_bp = Blueprint("logs", __name__)
 @logs_bp.route("/api/logs")
 @require_auth
 async def get_logs():
-    """Return recent log entries. Use ?since=<index> for incremental fetches."""
-    buf = current_app.log_buffer
-    since = request.args.get("since", 0, type=int)
-    snapshot = list(buf)
-    entries = snapshot[since:] if since < len(snapshot) else []
-    return jsonify({
-        "entries": entries,
-        "next": len(snapshot),
-        "total": len(snapshot),
-    })
+    """Fetch logs from SQLite. Supports incremental polling via ?since_id= and filtering."""
+    since_id = request.args.get("since_id", 0, type=int)
+    source = request.args.get("source") or None
+    level = request.args.get("level") or None
+    limit = request.args.get("limit", 200, type=int)
+
+    since_ts = None
+    until_ts = None
+    since_date = request.args.get("since")
+    until_date = request.args.get("until")
+    if since_date:
+        try:
+            since_ts = datetime.strptime(since_date, "%Y-%m-%d").timestamp()
+        except ValueError:
+            pass
+    if until_date:
+        try:
+            until_ts = (datetime.strptime(until_date, "%Y-%m-%d") + timedelta(days=1)).timestamp()
+        except ValueError:
+            pass
+
+    if since_id > 0:
+        # Incremental poll — get everything newer than since_id
+        entries = db.get_logs(since_id=since_id, limit=limit)
+        # Apply filters client-side for polling (fast enough for small batches)
+        if source:
+            entries = [e for e in entries if e["source"] == source]
+        if level:
+            entries = [e for e in entries if e["level"] == level]
+    else:
+        # Initial load or filtered fetch
+        entries = db.get_logs_range(since_ts=since_ts, until_ts=until_ts,
+                                    source=source, level=level,
+                                    limit=limit, offset=0)
+
+    max_id = entries[-1]["id"] if entries else since_id
+    return jsonify({"entries": entries, "next_id": max_id, "count": len(entries)})

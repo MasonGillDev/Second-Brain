@@ -17,8 +17,7 @@
     <!-- Sidebar -->
     <nav class="sidebar">
         <div class="sidebar-brand">
-            <span class="brand-icon">S</span>
-            <span class="brand-text">Second Brain</span>
+            <img src="/static/logo.png" alt="Second Brain" class="sidebar-logo">
         </div>
         <div class="sidebar-nav">
             <button class="nav-btn active" data-tab="chat" title="Chat">
@@ -48,6 +47,10 @@
             <button class="nav-btn" data-tab="config" title="Config">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
                 <span>Config</span>
+            </button>
+            <button class="nav-btn" data-tab="costs" title="Costs">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+                <span>Costs</span>
             </button>
         </div>
         <div class="sidebar-footer">
@@ -117,6 +120,7 @@
                     <button class="col-tab" data-col="documents">documents</button>
                     <button class="col-tab" data-col="reference">reference</button>
                     <button class="col-tab" data-col="archive">archive</button>
+                    <button class="col-tab" data-col="code_context">code</button>
                 </div>
                 <div class="memory-actions">
                     <input type="text" id="memory-search" class="input-field" placeholder="Search memories...">
@@ -266,19 +270,79 @@
             <div class="config-form" id="config-form"></div>
         </section>
 
+        <!-- Costs -->
+        <section class="tab-panel" id="tab-costs">
+            <div class="panel-header">
+                <h2>API Costs</h2>
+                <div class="header-actions">
+                    <input type="date" id="costs-since" class="input-field" style="width:auto">
+                    <input type="date" id="costs-until" class="input-field" style="width:auto">
+                    <button id="costs-refresh" class="btn-secondary">Refresh</button>
+                </div>
+            </div>
+            <div class="costs-content">
+                <div class="costs-summary" id="costs-summary"></div>
+                <div class="costs-charts">
+                    <div class="costs-chart-card" id="costs-chart-daily">
+                        <h3>Daily Spending</h3>
+                        <svg id="costs-bar-svg"></svg>
+                    </div>
+                    <div class="costs-chart-card" id="costs-chart-source">
+                        <h3>By Source</h3>
+                        <svg id="costs-donut-svg"></svg>
+                    </div>
+                </div>
+                <div class="costs-table-section">
+                    <h3>Recent API Calls</h3>
+                    <div class="memory-table-wrap">
+                        <table class="data-table" id="costs-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Source</th>
+                                    <th>Model</th>
+                                    <th>Input</th>
+                                    <th>Output</th>
+                                    <th>Cost</th>
+                                    <th>Tools</th>
+                                </tr>
+                            </thead>
+                            <tbody id="costs-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Logs -->
         <section class="tab-panel" id="tab-logs">
             <div class="panel-header">
                 <h2>Activity Log</h2>
                 <div class="header-actions">
-                    <button id="logs-clear" class="btn-secondary">Clear</button>
+                    <select id="logs-source-filter" class="input-field" style="width:auto">
+                        <option value="">All Sources</option>
+                        <option value="tool">Tool</option>
+                        <option value="memory">Memory</option>
+                        <option value="tokens">Tokens</option>
+                        <option value="sleep">Sleep</option>
+                        <option value="dashboard">Dashboard</option>
+                        <option value="ingest">Ingest</option>
+                        <option value="general">General</option>
+                    </select>
+                    <select id="logs-level-filter" class="input-field" style="width:auto">
+                        <option value="">All Levels</option>
+                        <option value="info">Info</option>
+                        <option value="warning">Warning</option>
+                        <option value="error">Error</option>
+                    </select>
                     <label class="checkbox-label">
-                        <input type="checkbox" id="logs-autoscroll" checked>
-                        Auto-scroll
+                        <input type="checkbox" id="logs-live" checked>
+                        Live
                     </label>
+                    <button id="logs-clear" class="btn-secondary">Clear</button>
                 </div>
             </div>
-            <pre class="log-stream" id="log-stream"></pre>
+            <div class="log-stream" id="log-stream"></div>
         </section>
     </main>
 
@@ -290,6 +354,8 @@
     <script src="/static/js/sleep.js"></script>
     <script src="/static/js/tools.js"></script>
     <script src="/static/js/config.js"></script>
+    <script src="/static/js/costs.js"></script>
+    <script src="/static/js/logs.js"></script>
     <script>
         // Theme toggle
         (function() {

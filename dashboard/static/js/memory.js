@@ -6,6 +6,10 @@
     const modal = document.getElementById('memory-modal');
     let editingId = null;
 
+    function isCodeCollection() {
+        return currentCollection === 'code_context';
+    }
+
     // Collection tabs
     document.getElementById('collection-tabs').addEventListener('click', (e) => {
         const tab = e.target.closest('.col-tab');
@@ -13,6 +17,10 @@
         document.querySelectorAll('.col-tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         currentCollection = tab.dataset.col;
+
+        // Toggle add button visibility (can't add to code_context manually)
+        document.getElementById('memory-add-btn').style.display = isCodeCollection() ? 'none' : '';
+
         loadMemories();
     });
 
@@ -36,18 +44,31 @@
     document.getElementById('memory-modal-save').addEventListener('click', saveMemory);
 
     async function loadMemories() {
-        const data = await api(`/api/memory/${currentCollection}?limit=100`);
-        if (!data) return;
-        renderTable(data.memories);
+        if (isCodeCollection()) {
+            const data = await api('/api/memory/code/list?limit=100');
+            if (!data) return;
+            renderCodeTable(data.memories);
+        } else {
+            const data = await api(`/api/memory/${currentCollection}?limit=100`);
+            if (!data) return;
+            renderTable(data.memories);
+        }
         loadStats();
     }
 
     async function searchMemories() {
         const q = document.getElementById('memory-search').value.trim();
         if (!q) { loadMemories(); return; }
-        const data = await api(`/api/memory/${currentCollection}/search?q=${encodeURIComponent(q)}&top_k=20`);
-        if (!data) return;
-        renderTable(data.results);
+
+        if (isCodeCollection()) {
+            const data = await api(`/api/memory/code/search?q=${encodeURIComponent(q)}&top_k=20`);
+            if (!data) return;
+            renderCodeTable(data.results);
+        } else {
+            const data = await api(`/api/memory/${currentCollection}/search?q=${encodeURIComponent(q)}&top_k=20`);
+            if (!data) return;
+            renderTable(data.results);
+        }
     }
 
     async function loadStats() {
@@ -65,21 +86,33 @@
     }
 
     function fmtTime(ts) {
-        if (!ts) return '—';
+        if (!ts) return '\u2014';
         const d = new Date(ts * 1000);
         return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
     }
 
     function renderTable(memories) {
+        // Set standard memory table headers
+        document.getElementById('memory-table').querySelector('thead').innerHTML = `<tr>
+            <th class="col-id">ID</th>
+            <th class="col-text">Text</th>
+            <th class="col-cat">Category</th>
+            <th class="col-access">Hits</th>
+            <th class="col-time">Created</th>
+            <th class="col-time">Last Accessed</th>
+            <th class="col-actions">Actions</th>
+        </tr>`;
+
         tbody.innerHTML = memories.map(m => {
             const meta = m.metadata || {};
             const cat = meta.category || meta.type || '';
             const hits = meta.access_count || 0;
             const created = fmtTime(meta.created_at);
             const accessed = fmtTime(meta.last_accessed);
+            const rel = m.relevance != null ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-tertiary)">${m.relevance.toFixed(3)}</span>` : '';
             return `<tr>
                 <td class="col-id">${esc(m.id)}</td>
-                <td class="col-text">${esc(m.text)}</td>
+                <td class="col-text">${esc(m.text)} ${rel}</td>
                 <td class="col-cat"><span class="badge cat-${cat}">${cat}</span></td>
                 <td class="col-access">${hits}</td>
                 <td class="col-time">${created}</td>
@@ -88,6 +121,44 @@
                     <button class="action-btn" onclick="memoryEdit('${esc(m.id)}', ${JSON.stringify(JSON.stringify(m.text))})">Edit</button>
                     <button class="action-btn delete" onclick="memoryDelete('${esc(m.id)}')">Del</button>
                 </td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderCodeTable(memories) {
+        // Set code-specific table headers
+        document.getElementById('memory-table').querySelector('thead').innerHTML = `<tr>
+            <th style="width:300px">File</th>
+            <th>Content</th>
+            <th style="width:80px">Type</th>
+            <th style="width:60px">Line</th>
+            <th style="width:70px">Relevance</th>
+        </tr>`;
+
+        if (!memories || memories.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-tertiary);padding:40px">No code context found. Try a search query.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = memories.map(m => {
+            const meta = m.metadata || {};
+            const fp = meta.file_path || '';
+            const shortPath = fp.split('/').slice(-3).join('/');
+            const line = meta.line_number || '';
+            const type = meta.type || '';
+            const lang = meta.language || '';
+            const rel = m.relevance != null ? m.relevance.toFixed(3) : '\u2014';
+
+            const typeBadgeClass = type === 'xml_doc' ? 'cat-user_fact' :
+                                   type === 'class_sig' ? 'cat-preference' :
+                                   type === 'comment_block' ? 'cat-decision' : 'cat-general';
+
+            return `<tr>
+                <td style="font-family:var(--font-mono);font-size:11px;color:var(--text-tertiary);word-break:break-all" title="${esc(fp)}">${esc(shortPath)}</td>
+                <td style="font-size:12px">${esc(m.text)}</td>
+                <td><span class="badge ${typeBadgeClass}">${type}</span></td>
+                <td style="font-family:var(--font-mono);font-size:11px;text-align:center">${line}</td>
+                <td style="font-family:var(--font-mono);font-size:11px;text-align:center;color:var(--text-tertiary)">${rel}</td>
             </tr>`;
         }).join('');
     }

@@ -120,6 +120,11 @@ Be concise but preserve all important details. Use bullet points. Do not include
 
             if config.LOG_TOKEN_USAGE:
                 print(f"  [memory] Summarized {len(to_summarize)} messages → {estimate_tokens(self.rolling_summary)} est. tokens")
+
+            import db
+            cost = db.compute_cost(config.SUMMARIZATION_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+            db.log_api_call("summarization", config.SUMMARIZATION_MODEL,
+                            response.usage.input_tokens, response.usage.output_tokens, cost)
         except Exception as e:
             print(f"  [memory] Summarization failed: {e}")
             # Fallback: just keep the old summary and drop messages anyway

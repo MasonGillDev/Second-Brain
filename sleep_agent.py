@@ -127,6 +127,8 @@ def _notify_telegram(summary: str):
 
 def run_sleep_cycle(dry_run: bool = False, notify: bool = False):
     """Run one sleep consolidation cycle."""
+    import db
+    db.init_db()
     logger = _setup_logging(config.SLEEP_LOG_DIR)
     logger.info("Sleep cycle started" + (" (DRY RUN)" if dry_run else ""))
 
@@ -183,6 +185,11 @@ def run_sleep_cycle(dry_run: bool = False, notify: bool = False):
 
         total_input_tokens += response.usage.input_tokens
         total_output_tokens += response.usage.output_tokens
+
+        import db
+        round_cost = db.compute_cost(config.SLEEP_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+        db.log_api_call("sleep", config.SLEEP_MODEL,
+                        response.usage.input_tokens, response.usage.output_tokens, round_cost)
 
         # Parse response
         tool_calls = []

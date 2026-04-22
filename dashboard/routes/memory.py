@@ -1,6 +1,7 @@
 """Memory CRUD and cluster visualization endpoints."""
 
 import time
+import config
 from quart import Blueprint, request, jsonify, current_app
 from dashboard.auth import require_auth
 
@@ -115,6 +116,42 @@ async def delete_memory(collection, doc_id):
     vs = current_app.vector_store
     vs.delete(collection, doc_id)
     return jsonify({"status": "deleted"})
+
+
+@memory_bp.route("/api/memory/code/search")
+@require_auth
+async def search_code_context():
+    """Search code_context collection — mirrors what search_code tool returns."""
+    q = request.args.get("q", "")
+    top_k = request.args.get("top_k", 12, type=int)
+
+    if not q:
+        return jsonify({"error": "query required"}), 400
+
+    vs = current_app.vector_store
+    if "code_context" not in vs.collections:
+        return jsonify({"results": [], "total": 0})
+
+    results = vs.query("code_context", q, top_k=top_k)
+    results = [r for r in results if r.get("relevance", 0) >= config.RETRIEVAL_MIN_RELEVANCE_CODE]
+
+    return jsonify({"results": results, "total": vs.count("code_context")})
+
+
+@memory_bp.route("/api/memory/code/list")
+@require_auth
+async def list_code_context():
+    """List code_context entries."""
+    vs = current_app.vector_store
+    if "code_context" not in vs.collections:
+        return jsonify({"memories": [], "total": 0})
+
+    limit = request.args.get("limit", 50, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    all_mems = vs.get_all("code_context", limit=limit + offset)
+    mems = all_mems[offset:offset + limit]
+
+    return jsonify({"memories": mems, "total": vs.count("code_context")})
 
 
 @memory_bp.route("/api/memory/clusters")

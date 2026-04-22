@@ -4,7 +4,8 @@ Code MCP Server.
 Delegates coding and system tasks to Claude Code (headless CLI).
 Uses the user's Claude Code subscription — no API tokens consumed.
 
-Two tools with different permission levels:
+Three tools:
+  - search_code: Search pre-indexed code knowledge (instant, free)
   - code_research: Read-only exploration (safe, no edits)
   - code_task: Can read, write, and edit files (scoped + capped)
 """
@@ -16,6 +17,11 @@ import json
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config
+from memory.vector_store import VectorStore
+
+_vector_store = VectorStore()
 
 import signal
 import atexit
@@ -250,11 +256,48 @@ def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
 
 
 @mcp.tool()
+def search_code(query: str, top_k: int = 12) -> str:
+    """
+    Search pre-indexed codebase knowledge for classes, methods, and documentation.
+    Try this once BEFORE using code_research — it's instant and free.
+
+    Use for: understanding architecture, finding which services handle something,
+    locating relevant files and classes, getting an overview before deep-diving.
+
+    IMPORTANT: Call this ONCE with a broad query. Do NOT call it multiple times
+    with different keyword guesses — if the first search doesn't return what you
+    need, use code_research instead. This is a vector search, not a keyword index.
+
+    Args:
+        query: Natural language description of what you're looking for.
+        top_k: Maximum number of results to return (default 12).
+    """
+    if "code_context" not in _vector_store.collections:
+        return "No code has been ingested yet. Run ingest_code first."
+
+    results = _vector_store.query("code_context", query, top_k=top_k)
+    results = [r for r in results if r.get("relevance", 0) >= config.RETRIEVAL_MIN_RELEVANCE_CODE]
+
+    if not results:
+        return "No relevant code context found."
+
+    lines = []
+    for r in results:
+        fp = r.get("metadata", {}).get("file_path", "")
+        line_num = r.get("metadata", {}).get("line_number", "")
+        lines.append(f"- [{fp}:{line_num}] {r['text']}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def code_research(task: str, working_directory: str, resume: bool = True) -> str:
     """
     Research a codebase using Claude Code (read-only, safe).
     Use for: understanding code, finding patterns, exploring architecture,
     answering questions about a project, reading logs, checking git history.
+    This tool does not work in /Users/masongill/Second Brain.
+
 
     This CANNOT modify any files. It can only read and search.
 
@@ -283,6 +326,8 @@ def code_task(task: str, working_directory: str, max_turns: int = DEFAULT_MAX_TU
 
     This CAN modify files in the specified directory. It cannot touch
     the Second Brain directory or run destructive system commands.
+    This tool does not work in /Users/masongill/Second Brain.
+
 
     Args:
         task: What to build, fix, or do. Be specific about requirements.
@@ -314,6 +359,7 @@ def run_background(command: str, working_directory: str, wait_seconds: int = 5) 
     """
     Start a long-running process in the background (dev servers, watchers, etc.).
     Captures initial output for a few seconds then returns while the process keeps running.
+    This tool does not work in /Users/masongill/Second Brain.
 
     Use stop_background to kill it later, or list_background to see what's running.
 

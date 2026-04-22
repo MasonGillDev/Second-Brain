@@ -206,6 +206,11 @@ class MemoryManager:
             )
             raw = response.content[0].text.strip()
 
+            import db
+            cost = db.compute_cost(config.SUMMARIZATION_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+            db.log_api_call("memory_extraction", config.SUMMARIZATION_MODEL,
+                            response.usage.input_tokens, response.usage.output_tokens, cost)
+
             # Strip markdown code fences if present
             if raw.startswith("```"):
                 # Remove ```json or ``` prefix and trailing ```
@@ -293,20 +298,9 @@ class MemoryManager:
             items = "\n".join(f"- {m['text']}" for m in reference)
             sections.append(f"### Reference Knowledge\n{items}")
 
-        # Code context (docstrings, comments from ingested codebases)
-        if "code_context" in self.vector_store.collections:
-            code = self.vector_store.query("code_context", query, top_k=config.RETRIEVAL_TOP_K_CODE)
-            code = [m for m in code if m["relevance"] >= config.RETRIEVAL_MIN_RELEVANCE_CODE]
-            if code:
-                items = []
-                for m in code:
-                    fp = m["metadata"].get("file_path", "")
-                    line = m["metadata"].get("line_number", "")
-                    items.append(f"- [{fp}:{line}] {m['text']}")
-                sections.append(f"### Relevant Code Context\n" + "\n".join(items))
-
-        # Document memories
+        # Document memories (stricter threshold)
         documents = self.vector_store.query("documents", query, top_k=config.RETRIEVAL_TOP_K_DOCUMENTS)
+        documents = [m for m in documents if m["relevance"] >= config.RETRIEVAL_MIN_RELEVANCE_DOCUMENTS]
         if documents:
             items = []
             for m in documents:

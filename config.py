@@ -54,12 +54,12 @@ CHROMA_PERSIST_DIR = "./memory/data/chroma"
 # Number of results to retrieve per collection when building context
 RETRIEVAL_TOP_K_LONG_TERM = 3
 RETRIEVAL_TOP_K_EPISODIC = 2
-RETRIEVAL_TOP_K_DOCUMENTS = 3
+RETRIEVAL_TOP_K_DOCUMENTS = 2
 RETRIEVAL_TOP_K_PROCEDURAL = 2
 
 # Minimum relevance score (0-1) to include a retrieved memory.
 # Higher = stricter filtering = fewer but more relevant results = lower cost.
-RETRIEVAL_MIN_RELEVANCE = 0.3
+RETRIEVAL_MIN_RELEVANCE = 0.39
 
 # Minimum word count in a user message to trigger memory retrieval.
 # Short messages like "yes", "ok", "thanks" skip retrieval entirely to save tokens.
@@ -98,9 +98,12 @@ CODE_INGEST_MIN_COMMENT_LINES = 2
 # Max file size to ingest (skip huge generated files)
 CODE_INGEST_MAX_FILE_SIZE = 100_000  # 100KB
 
+# Documents require higher relevance to avoid injecting loosely-related content
+RETRIEVAL_MIN_RELEVANCE_DOCUMENTS = 0.45
+
 # Retrieval settings for code_context collection
-RETRIEVAL_TOP_K_CODE = 3
-RETRIEVAL_MIN_RELEVANCE_CODE = 0.38
+RETRIEVAL_TOP_K_CODE = 12
+RETRIEVAL_MIN_RELEVANCE_CODE = 0.30
 
 # =============================================================================
 # MEMORY IMPORTANCE
@@ -152,12 +155,21 @@ CONSOLIDATION_MAX_CLUSTER_SIZE = 2
 INPUT_COST_PER_1K = 0.003    # $/1K input tokens (Sonnet)
 OUTPUT_COST_PER_1K = 0.015   # $/1K output tokens (Sonnet)
 
+# Per-model cost rates for accurate cost tracking
+MODEL_COSTS = {
+    "claude-sonnet-4-20250514":  {"input": 0.003, "output": 0.015},
+    "claude-haiku-4-5-20251001": {"input": 0.0008, "output": 0.004},
+}
+
 # Token estimation multiplier: words * this = approx tokens
 # Claude tokenizer averages ~1.3 tokens per word for English
 TOKEN_ESTIMATION_MULTIPLIER = 1.3
 
 # Log token usage to console (helps you see where tokens are going)
 LOG_TOKEN_USAGE = True
+
+# SQLite database for cost tracking and persistent logs
+DB_PATH = "./memory/data/secondbrain.db"
 
 # =============================================================================
 # SESSION PERSISTENCE

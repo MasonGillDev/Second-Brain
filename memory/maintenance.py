@@ -82,6 +82,12 @@ class MemoryMaintenance:
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.content[0].text.strip()
+
+            import db
+            cost = db.compute_cost(config.SUMMARIZATION_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+            db.log_api_call("maintenance", config.SUMMARIZATION_MODEL,
+                            response.usage.input_tokens, response.usage.output_tokens, cost)
+
             decision = self._parse_json(raw)
 
             if not decision or "action" not in decision:
@@ -236,6 +242,12 @@ class MemoryMaintenance:
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = response.content[0].text.strip()
+
+            import db
+            cost = db.compute_cost(config.SUMMARIZATION_MODEL, response.usage.input_tokens, response.usage.output_tokens)
+            db.log_api_call("maintenance", config.SUMMARIZATION_MODEL,
+                            response.usage.input_tokens, response.usage.output_tokens, cost)
+
             result = self._parse_json(raw)
 
             if not result or result.get("merged") is None:

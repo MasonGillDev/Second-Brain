@@ -14,6 +14,7 @@ import re
 import ast
 import hashlib
 import argparse
+import subprocess
 import config
 from memory.vector_store import VectorStore
 
@@ -34,6 +35,9 @@ SUPPORTED_EXTENSIONS = {
     ".h": "c",
     ".hpp": "cpp",
     ".swift": "swift",
+    ".cs": "csharp",
+    ".razor": "razor",
+    ".cshtml": "razor",
 }
 
 # Directories to skip
@@ -41,6 +45,7 @@ SKIP_DIRS = {
     "node_modules", ".git", "__pycache__", ".venv", "venv",
     "dist", "build", ".next", ".nuxt", "target", "vendor",
     ".tox", "eggs", "*.egg-info", ".mypy_cache", ".pytest_cache",
+    "bin", "obj", ".vs", "Migrations", "wwwroot",
 }
 
 
@@ -53,6 +58,37 @@ def file_hash(filepath: str) -> str:
 def _should_skip_dir(dirname: str) -> bool:
     """Check if directory should be skipped."""
     return dirname in SKIP_DIRS or dirname.startswith(".")
+
+
+def _find_git_root(path: str) -> str | None:
+    """Find the git repo root for a path, or None if not in a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=path if os.path.isdir(path) else os.path.dirname(path),
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _get_gitignored_files(git_root: str, file_paths: list[str]) -> set[str]:
+    """Use git check-ignore to batch-check which files are ignored."""
+    if not file_paths:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            input="\n".join(file_paths),
+            cwd=git_root,
+            capture_output=True, text=True, timeout=30,
+        )
+        return set(result.stdout.strip().splitlines())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return set()
 
 
 # =============================================================================
@@ -204,6 +240,10 @@ def _parse_generic(filepath: str, source: str, single_comment: str = "//") -> li
     chunks = []
     language = SUPPORTED_EXTENSIONS.get(os.path.splitext(filepath)[1], "unknown")
 
+    # Extract C# XML doc comments (/// <summary> blocks) and attach to declarations
+    if language in ("csharp", "razor"):
+        chunks.extend(_extract_xml_doc_comments(filepath, source, language))
+
     # Extract block comments (/* ... */ or /** ... */)
     block_pattern = r'/\*\*?(.*?)\*/'
     for match in re.finditer(block_pattern, source, re.DOTALL):
@@ -232,7 +272,7 @@ def _parse_generic(filepath: str, source: str, single_comment: str = "//") -> li
             }
         })
 
-    # Extract single-line comment blocks
+    # Extract single-line comment blocks (but NOT xml doc comments, already handled)
     comment_blocks = _extract_comment_blocks(source, single_comment)
     for block in comment_blocks:
         if len(block["text"]) < config.CODE_INGEST_MIN_COMMENT_LENGTH:
@@ -243,34 +283,117 @@ def _parse_generic(filepath: str, source: str, single_comment: str = "//") -> li
         })
         chunks.append(block)
 
-    # Extract bare declarations (functions/classes without comments)
-    commented_lines = set()
+    # Extract only class/interface/struct declarations (skip bare methods, properties, namespaces)
+    # These are high-value: they tell you what types exist and where
+    documented_lines = set()
     for c in chunks:
-        commented_lines.add(c["metadata"].get("line_number", 0))
+        documented_lines.add(c["metadata"].get("line_number", 0))
 
+    class_pattern = re.compile(
+        r'^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:partial\s+)?'
+        r'(?:abstract\s+)?(?:sealed\s+)?(?:class|interface|enum|struct|record)\s+(\w+)'
+    )
     lines = source.split('\n')
     for i, line in enumerate(lines):
         line_num = i + 1
-        if line_num in commented_lines:
+        if line_num in documented_lines:
             continue
-        name = _extract_declaration_name(line, language)
-        if name:
-            # Get the full signature line, cleaned up
-            sig = line.strip()
-            # Skip private/underscore helpers in non-Python (Python handled by AST)
-            if sig.startswith("_"):
-                continue
+        stripped = line.strip()
+        match = class_pattern.match(stripped)
+        if match:
+            # Include the full line (shows inheritance, interfaces)
             chunks.append({
-                "text": sig,
+                "text": stripped,
                 "metadata": {
                     "file_path": filepath,
                     "line_number": line_num,
-                    "type": "signature",
-                    "function_name": name,
+                    "type": "class_sig",
+                    "function_name": match.group(1),
                     "class_name": "",
                     "language": language,
                 }
             })
+
+    return chunks
+
+
+def _extract_xml_doc_comments(filepath: str, source: str, language: str) -> list[dict]:
+    """Extract C# XML doc comments (///) and pair them with their declarations."""
+    chunks = []
+    lines = source.split('\n')
+    i = 0
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+
+        # Look for start of /// block
+        if stripped.startswith('///'):
+            doc_lines = []
+            doc_start = i + 1  # 1-indexed
+
+            # Collect consecutive /// lines
+            while i < len(lines) and lines[i].strip().startswith('///'):
+                raw = lines[i].strip()[3:].strip()  # Remove ///
+                doc_lines.append(raw)
+                i += 1
+
+            # Parse the XML content into plain text
+            doc_text = " ".join(doc_lines)
+            # Extract <summary> content
+            summary_match = re.search(r'<summary>\s*(.*?)\s*</summary>', doc_text, re.DOTALL)
+            summary = summary_match.group(1).strip() if summary_match else ""
+            # Extract <param> tags
+            params = re.findall(r'<param\s+name="(\w+)">\s*(.*?)\s*</param>', doc_text)
+            # Extract <returns>
+            returns_match = re.search(r'<returns>\s*(.*?)\s*</returns>', doc_text)
+            returns = returns_match.group(1).strip() if returns_match else ""
+            # Extract <remarks>
+            remarks_match = re.search(r'<remarks>\s*(.*?)\s*</remarks>', doc_text)
+            remarks = remarks_match.group(1).strip() if remarks_match else ""
+
+            # Build clean text from XML doc
+            parts = []
+            if summary:
+                parts.append(summary)
+            if params:
+                param_strs = [f"{name}: {desc}" for name, desc in params]
+                parts.append("Params: " + "; ".join(param_strs))
+            if returns:
+                parts.append(f"Returns: {returns}")
+            if remarks:
+                parts.append(f"Note: {remarks}")
+
+            clean_doc = " | ".join(parts)
+            if not clean_doc or len(clean_doc) < config.CODE_INGEST_MIN_COMMENT_LENGTH:
+                continue
+
+            # Find the declaration this doc is attached to (next non-empty, non-attribute line)
+            decl_name = ""
+            decl_line = ""
+            while i < len(lines):
+                next_stripped = lines[i].strip()
+                if not next_stripped or next_stripped.startswith('['):
+                    i += 1  # skip blank lines and [Attribute] lines
+                    continue
+                decl_name = _extract_declaration_name(next_stripped, language)
+                decl_line = next_stripped
+                break
+
+            text = f"{decl_line}: {clean_doc}" if decl_name else clean_doc
+
+            chunks.append({
+                "text": text,
+                "metadata": {
+                    "file_path": filepath,
+                    "line_number": doc_start,
+                    "type": "xml_doc",
+                    "function_name": decl_name or "",
+                    "class_name": "",
+                    "language": language,
+                }
+            })
+        else:
+            i += 1
 
     return chunks
 
@@ -346,15 +469,122 @@ def _extract_declaration_name(line: str, language: str) -> str:
         r'^(?:pub\s+)?fn\s+(\w+)',
         r'^(?:pub\s+)?struct\s+(\w+)',
         r'^(?:pub\s+)?enum\s+(\w+)',
-        # Java/Swift
-        r'^(?:public|private|protected)?\s*(?:static\s+)?(?:class|interface|enum)\s+(\w+)',
-        r'^(?:public|private|protected)?\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\(',
+        # C# / Java / Swift
+        r'^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:partial\s+)?(?:abstract\s+)?(?:sealed\s+)?(?:class|interface|enum|struct|record)\s+(\w+)',
+        r'^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:async\s+)?(?:virtual\s+)?(?:override\s+)?(?:abstract\s+)?[\w<>\[\]\?]+\s+(\w+)\s*\(',
+        # C# properties
+        r'^(?:public|private|protected|internal)?\s*(?:static\s+)?(?:virtual\s+)?(?:override\s+)?[\w<>\[\]\?]+\s+(\w+)\s*\{',
     ]
     for pattern in patterns:
         match = re.match(pattern, line.strip())
         if match:
             return match.group(1)
     return ""
+
+
+# =============================================================================
+# RAZOR PARSER (.razor, .cshtml)
+# =============================================================================
+
+def _parse_razor(filepath: str, source: str) -> list[dict]:
+    """Extract C# code and comments from Razor/Blazor files."""
+    chunks = []
+    language = "razor"
+
+    # Extract @code { ... } blocks and parse them as C#
+    code_blocks = re.finditer(r'@code\s*\{', source)
+    for match in code_blocks:
+        # Find the matching closing brace
+        start = match.end()
+        depth = 1
+        pos = start
+        while pos < len(source) and depth > 0:
+            if source[pos] == '{':
+                depth += 1
+            elif source[pos] == '}':
+                depth -= 1
+            pos += 1
+        if depth == 0:
+            code_content = source[start:pos - 1]
+            code_line = source[:match.start()].count('\n') + 1
+            # Parse the C# inside @code with the generic parser
+            code_chunks = _parse_generic(filepath, code_content, "//")
+            for c in code_chunks:
+                c["metadata"]["language"] = "razor"
+                c["metadata"]["line_number"] += code_line
+            chunks.extend(code_chunks)
+
+    # Extract Razor/HTML comments: @* ... *@
+    razor_comments = re.finditer(r'@\*\s*(.*?)\s*\*@', source, re.DOTALL)
+    for match in razor_comments:
+        text = match.group(1).strip()
+        if len(text) < config.CODE_INGEST_MIN_COMMENT_LENGTH:
+            continue
+        line_number = source[:match.start()].count('\n') + 1
+        chunks.append({
+            "text": text,
+            "metadata": {
+                "file_path": filepath,
+                "line_number": line_number,
+                "type": "block_comment",
+                "function_name": "",
+                "class_name": "",
+                "language": language,
+            }
+        })
+
+    # Also pick up any // and /* */ comments outside @code blocks
+    html_comments = re.finditer(r'<!--\s*(.*?)\s*-->', source, re.DOTALL)
+    for match in html_comments:
+        text = match.group(1).strip()
+        if len(text) < config.CODE_INGEST_MIN_COMMENT_LENGTH:
+            continue
+        line_number = source[:match.start()].count('\n') + 1
+        chunks.append({
+            "text": text,
+            "metadata": {
+                "file_path": filepath,
+                "line_number": line_number,
+                "type": "block_comment",
+                "function_name": "",
+                "class_name": "",
+                "language": language,
+            }
+        })
+
+    # Extract @inject directives (useful for understanding dependencies)
+    injects = re.finditer(r'@inject\s+([\w<>.]+)\s+(\w+)', source)
+    for match in injects:
+        line_number = source[:match.start()].count('\n') + 1
+        chunks.append({
+            "text": f"@inject {match.group(1)} {match.group(2)}",
+            "metadata": {
+                "file_path": filepath,
+                "line_number": line_number,
+                "type": "dependency",
+                "function_name": match.group(2),
+                "class_name": "",
+                "language": language,
+            }
+        })
+
+    # Extract @page route
+    page_match = re.search(r'@page\s+"([^"]+)"', source)
+    if page_match:
+        line_number = source[:page_match.start()].count('\n') + 1
+        chunks.append({
+            "text": f"@page \"{page_match.group(1)}\"",
+            "metadata": {
+                "file_path": filepath,
+                "line_number": line_number,
+                "type": "route",
+                "function_name": "",
+                "class_name": "",
+                "language": language,
+            }
+        })
+
+    return chunks
 
 
 # =============================================================================
@@ -370,6 +600,8 @@ def _get_parser(filepath: str):
 
     if language == "python":
         return _parse_python
+    if language == "razor":
+        return _parse_razor
 
     # All others use generic parser with appropriate comment prefix
     comment_prefix = "//"
@@ -399,18 +631,35 @@ def ingest_codebase(path: str, vector_store: VectorStore | None = None) -> int:
     if os.path.isfile(path):
         return _ingest_file(path, vector_store)
 
+    # Check if we're in a git repo for .gitignore filtering
+    git_root = _find_git_root(path)
+    if git_root:
+        print(f"  [code_ingest] Git repo detected, respecting .gitignore")
+
     total = 0
     for root, dirs, files in os.walk(path):
         # Filter out skip dirs in-place
         dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
 
+        # Collect candidate files in this directory
+        candidates = []
         for filename in files:
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SUPPORTED_EXTENSIONS:
                 continue
-
             filepath = os.path.join(root, filename)
+            candidates.append(filepath)
 
+        # Batch-check gitignore for this directory's candidates
+        if git_root and candidates:
+            ignored = _get_gitignored_files(git_root, candidates)
+            if ignored:
+                skipped = len(ignored)
+                candidates = [f for f in candidates if f not in ignored]
+                if config.LOG_TOKEN_USAGE and skipped:
+                    print(f"  [code_ingest] SKIP (gitignored): {skipped} files in {root}")
+
+        for filepath in candidates:
             # Skip files over size limit
             if os.path.getsize(filepath) > config.CODE_INGEST_MAX_FILE_SIZE:
                 if config.LOG_TOKEN_USAGE:

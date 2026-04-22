@@ -57,7 +57,7 @@ async def chat_ws():
             async def run_agent():
                 nonlocal response_text, error_text
                 try:
-                    response_text = await agent.process(text or "What's in this image?", images=images)
+                    response_text = await agent.process(text or "What's in this image?", images=images, source="dashboard")
                 except Exception as e:
                     error_text = str(e)
 

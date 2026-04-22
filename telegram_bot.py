@@ -8,10 +8,15 @@ Usage:
     python telegram_bot.py
 """
 
+import sys
+import io
+import re
+import time
 import base64
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import db
 
 import config
 from core import AgentCore
@@ -75,7 +80,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action("typing")
 
     try:
-        response = await agent.process(user_text)
+        response = await agent.process(user_text, source="telegram")
 
         # Telegram has a 4096 char limit per message
         if len(response) <= 4096:
@@ -113,7 +118,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Use caption as text, or default
         text = (update.message.caption or "What's in this image?").strip()
 
-        response = await agent.process(text, images=images)
+        response = await agent.process(text, images=images, source="telegram")
 
         if len(response) <= 4096:
             await update.message.reply_text(response)
@@ -147,7 +152,34 @@ async def post_shutdown(application: Application):
         print("  Goodbye!")
 
 
+class _TelegramLogCapture(io.TextIOBase):
+    """Tee stdout to console + SQLite for the telegram process."""
+    _TAG_RE = re.compile(r'\[(\w+)\]')
+
+    def __init__(self, original):
+        self.original = original
+
+    def write(self, text):
+        self.original.write(text)
+        if text.strip():
+            msg = text.strip()
+            level = "error" if any(w in msg.lower() for w in ("error", "failed")) else "info"
+            tag_match = self._TAG_RE.search(msg)
+            source = tag_match.group(1).lower() if tag_match else "telegram"
+            try:
+                db.log_message(level, source, msg)
+            except Exception:
+                pass
+        return len(text)
+
+    def flush(self):
+        self.original.flush()
+
+
 def main():
+    db.init_db()
+    sys.stdout = _TelegramLogCapture(sys.stdout)
+
     print("╔══════════════════════════════════════════════════╗")
     print("║        🧠 Second Brain — Telegram Bot           ║")
     print("╚══════════════════════════════════════════════════╝")
@@ -167,15 +199,15 @@ def main():
     async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text  # includes "/remember"
         await update.message.chat.send_action("typing")
-        response = await agent.process(text)
+        response = await agent.process(text, source="telegram")
         await update.message.reply_text(response)
 
     async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        response = await agent.process("/stats")
+        response = await agent.process("/stats", source="telegram")
         await update.message.reply_text(response)
 
     async def memories_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        response = await agent.process("/memories")
+        response = await agent.process("/memories", source="telegram")
         if len(response) <= 4096:
             await update.message.reply_text(response)
         else:

@@ -82,7 +82,8 @@ class AgentCore:
         all_tools = self.router.get_tools()
         return self.adapter.format_tools(all_tools) if all_tools else None
 
-    async def process(self, user_input: str, images: list[dict] | None = None) -> str:
+    async def process(self, user_input: str, images: list[dict] | None = None,
+                      source: str = "unknown") -> str:
         """
         Process a user message and return the agent's response.
         Handles memory, tool routing, and the multi-round tool-use loop.
@@ -92,6 +93,7 @@ class AgentCore:
             images: Optional list of image dicts with keys:
                     - "data": base64-encoded image data
                     - "media_type": e.g. "image/png", "image/jpeg"
+            source: Where this request came from (dashboard, telegram, scheduler, cli).
         """
         # Reload config overrides (picks up dashboard changes without restart)
         config.reload_overrides()
@@ -151,6 +153,7 @@ class AgentCore:
 
         # Tool-use loop
         total_usage = Usage()
+        total_tool_calls = 0
 
         for round_num in range(config.MAX_TOOL_ROUNDS):
             if self._cancelled:
@@ -168,6 +171,8 @@ class AgentCore:
             # Execute tools
             tool_results = []
             tools_changed = False
+
+            total_tool_calls += len(response.tool_calls)
 
             for tc in response.tool_calls:
                 # Handle activate_skill meta-tool locally
@@ -216,6 +221,18 @@ class AgentCore:
             input_cost = (total_usage.input_tokens / 1000) * config.INPUT_COST_PER_1K
             output_cost = (total_usage.output_tokens / 1000) * config.OUTPUT_COST_PER_1K
             print(f"  [tokens] in: {total_usage.input_tokens} | out: {total_usage.output_tokens} | cost: ${input_cost + output_cost:.4f}")
+
+        # Persist cost to database
+        import db
+        cost = db.compute_cost(config.MODEL, total_usage.input_tokens, total_usage.output_tokens)
+        db.log_api_call(
+            source=source,
+            model=config.MODEL,
+            input_tokens=total_usage.input_tokens,
+            output_tokens=total_usage.output_tokens,
+            cost_usd=cost,
+            tool_calls_count=total_tool_calls,
+        )
 
         # Store in conversation memory and persist session
         self.memory.add_assistant_message(assistant_text)
