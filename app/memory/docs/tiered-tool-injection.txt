@@ -1,0 +1,193 @@
+# Tiered Tool Loading Architecture
+
+## Overview
+
+This document describes a tiered system for delivering tool definitions to an LLM agent. The goal is to maximize task completion quality while minimizing token cost, latency, and round trips, scaling gracefully from small toolsets to large ones.
+
+The system has three tiers, selected automatically based on the total token size of the agent's tool stack.
+
+## Goals and Non-Goals
+
+**Goals**
+- Match delivery strategy to toolset size; avoid over-engineering for small agents.
+- Eliminate avoidable round trips for tool definition lookup in the common case.
+- Preserve transparency: the agent should always know what tools exist, even when full definitions are loaded lazily.
+- Index against rich invocation examples (50+ per tool) without paying for them in every prompt.
+
+**Non-Goals**
+- Replacing model judgment with retrieval judgment. Retrieval pre-fetches; the agent decides.
+- Hard-narrowing the available toolset based on embedding similarity. The manifest remains the source of truth for "what exists."
+
+## Tier Selection
+
+Tier is determined by the total token count of all tool definitions combined.
+
+| Tier | Condition | Strategy |
+|------|-----------|----------|
+| 1 | `tool_count <= 15` | Inline all full tool definitions in the system prompt |
+| 2 | `tool_count > 15` | Manifest + vector-based pre-fetch (Option B hybrid) |
+
+Token count is computed at agent-build time, not per-request. Tier assignment is stable for a given agent configuration.
+
+> Note: The tier 1 threshold is currently expressed as a tool count. A token-based threshold (e.g., total definitions under ~5K tokens) may be more robust for agents with unusually large or small individual tool definitions. Consider revisiting after observing real agents in production.
+
+## Tier 1: Inline All Definitions
+
+When an agent has 15 or fewer tools, all tool definitions are injected directly into the system prompt at build time.
+
+**Rationale**
+- The full definition payload is small enough that token cost is negligible, especially with prompt caching on the system prompt prefix.
+- No retrieval infrastructure required; no round trips; no failure modes from retrieval misses.
+- The agent sees everything available at all times, maximizing decision quality.
+
+**Implementation**
+- Concatenate all tool definitions into a stable block at a fixed position in the system prompt (top of the tool section).
+- Definition ordering should be deterministic to maximize prompt cache hit rate.
+- No manifest layer, no `get_tool` capability — the agent does not need them.
+
+## Tier 2: Manifest + Vector Pre-Fetch (Option B Hybrid)
+
+When an agent has more than 15 tools, the system shifts to a hybrid model:
+
+1. **The manifest is always loaded.** A compact entry per tool (name, one-line description, category) lives in the system prompt. The agent always knows the full set of available tools.
+2. **A vector store pre-fetches likely-relevant full definitions.** On each user message, the system queries an embedding index of invocation examples and pre-loads the top-K full tool definitions into the prompt.
+3. **`get_tool` remains available as a fallback.** If the agent needs a tool whose full definition was not pre-fetched, it can call `get_tool(tool_id)` to retrieve it. This is the safety net for retrieval misses.
+
+In the common case, the pre-fetch contains the tools the agent needs and no round trip is required. In the uncommon case, the agent falls back to the current `get_tool` behavior. The downside risk is bounded: worst case, behavior degrades to what the manifest-only system already does.
+
+### Components
+
+#### Manifest
+
+A compact directory of all tools available to the agent. One entry per tool, kept short:
+
+```
+- send_email (category: communication) — Send an email to one or more recipients.
+- search_emails (category: communication) — Search the user's inbox by sender, subject, or date.
+- create_calendar_event (category: scheduling) — Create a new event on the user's calendar.
+...
+```
+
+Manifest entries should include category labels so the agent can reason about coverage even when full definitions are absent.
+
+#### Tool Definition Store
+
+A keyed store mapping `tool_id` to full tool definition (parameters, schemas, detailed descriptions, usage notes). This is the canonical source of truth for tool behavior. The agent never sees this directly; it is retrieved by ID, either by pre-fetch or by `get_tool`.
+
+#### Invocation Example Index (Vector Store)
+
+A separate vector store indexing **invocation examples** — natural-language phrasings of user prompts that should trigger each tool. Each entry maps an example to a `tool_id`.
+
+Example entries for `send_email`:
+- "send Bob the meeting notes"
+- "draft a reply to the customer complaint"
+- "let the team know the deployment is done"
+- "follow up with marketing about the campaign"
+- "respond to Sarah's question from yesterday"
+
+Each tool should have **30–60 diverse examples**. Diversity is more valuable than volume: vary vocabulary (formal vs casual), specificity (vague vs explicit), context (different scenarios), and indirection (implied vs stated need). Examples that cluster too closely should be deduplicated.
+
+This index is the asset that justifies the retrieval system. It captures a high-resolution map of intent space that cannot fit in any prompt.
+
+#### Retrieval Step
+
+On each user message:
+
+1. Build a retrieval query from the current message plus recent conversational context (not just the latest message in isolation — see "Multi-Turn Considerations").
+2. Query the invocation example index.
+3. Take the top-K matching examples (recommend K = 15–20).
+4. Deduplicate to the set of unique `tool_id`s those examples point to.
+5. Fetch the corresponding full tool definitions from the tool definition store.
+6. Inject them into the prompt as the "pre-fetched tools" section, alongside the always-present manifest.
+
+#### `get_tool` Fallback
+
+If the agent decides it needs a tool that was not pre-fetched, it calls `get_tool(tool_id)` and receives the full definition. This preserves the existing behavior as a safety net and converts silent retrieval failures into visible "I need to look up this tool" moments.
+
+### Request-Time Prompt Structure (Tier 2)
+
+```
+[system prompt prefix - cached]
+[manifest of all tools - cached, stable]
+[get_tool capability definition - cached]
+
+[pre-fetched tool definitions - varies per request]
+
+[conversation history]
+[current user message]
+```
+
+The first three blocks are stable across requests for a given agent and cache cleanly. Only the pre-fetched block varies per request.
+
+## Indexing Pipeline
+
+The invocation example index is built offline (or at tool-registration time) and updated when tools change.
+
+For each tool:
+
+1. Generate 80–120 candidate invocation examples using an LLM, prompted to vary across vocabulary, specificity, context, and indirection.
+2. Embed all candidates.
+3. Deduplicate by clustering: drop candidates that fall within a small cosine distance of an already-kept example. Target final count of 30–60 examples per tool.
+4. Persist examples to the vector store, each tagged with `tool_id`.
+
+When a tool is added, removed, or has its purpose meaningfully change, re-run this pipeline for the affected tool. Tool **schema** changes (parameter renames, new optional fields) typically do not require re-indexing — the example index is more stable than the tool definitions themselves.
+
+## Multi-Turn Considerations
+
+Embedding only the latest user message produces poor retrieval on follow-ups. "Now do the same for Bob" embeds to nothing useful in isolation.
+
+**Recommendation**: build the retrieval query from a context window that includes:
+- The current user message (highest weight)
+- The previous 2–3 turns
+- The active task description if one is tracked
+
+How exactly these are combined (concatenation, weighted embedding, separate queries that are merged) is an implementation choice. Start simple (concatenation) and refine if retrieval quality is poor on multi-turn tasks.
+
+**Stability within a task**: avoid removing tools from the pre-fetched set mid-task. If a tool was loaded on turn 2 and the agent might reference it on turn 4, it should still be present. Strategies:
+- Accumulate pre-fetched tools across turns with a cap (e.g., last 30 unique tools) and LRU eviction.
+- Or, freeze the pre-fetched set once the agent commits to a multi-step task.
+
+## Failure Modes and Mitigations
+
+| Failure Mode | Mitigation |
+|--------------|------------|
+| Retrieval misses the right tool | Agent falls back to `get_tool` via manifest. One extra round trip, no task failure. |
+| Retrieval over-fetches | Cap K at a reasonable number (15–20). Extra tokens are cheap; missing tools are not. |
+| Manifest itself becomes too large | Categorize and consider hierarchical manifest (top-level categories always visible, drill-down per category). Out of scope for the initial build. |
+| Embedding model becomes stale | Index can be rebuilt independently of tool definitions. Keep example storage decoupled from the embedding artifacts. |
+| Multi-turn drift | Build retrieval queries from rolling context, not just the latest message. |
+| Tool dependencies (A only useful with B) | Tag co-load hints in the tool definition store; when A is fetched, also fetch tools tagged as co-loaders. |
+
+## Metrics to Instrument
+
+The metrics that matter are about task outcomes, not retrieval similarity scores. Recommended instrumentation:
+
+- **Round-trip avoidance rate**: fraction of tasks completed with zero `get_tool` calls. This measures whether pre-fetch is doing its job.
+- **Tool availability**: fraction of `get_tool` calls where the tool was in the manifest but not pre-fetched (retrieval miss), versus calls for tools the agent chose to look up for other reasons.
+- **Task completion rate**: end-to-end success on a held-out eval set. The ultimate metric.
+- **Latency per turn**: pre-fetch should reduce average latency in tier 2; verify this empirically.
+- **Capability gap signal**: fraction of user messages where no tool was retrieved with a score above a threshold. Useful for discovering missing tools.
+
+Optimize for round-trip avoidance and completion rate together. Optimizing for one in isolation tends to hurt the other.
+
+## Open Questions
+
+These are deliberately left for later iterations rather than baked into the initial build:
+
+- **Tier 3 threshold**: when does the manifest itself become too large to inline, requiring hierarchical retrieval? Likely above several hundred tools, but worth measuring rather than guessing.
+- **Task-aware tiering**: should tier or pre-fetch K vary based on signals like "first turn of conversation" (be generous) vs "mid-task continuation" (be focused)? Worth exploring once basic metrics are in place.
+- **Hybrid retrieval**: should the vector search be augmented with keyword/BM25 search over tool names and aliases, to handle cases where users name a tool explicitly? Recommend adding this once the vector-only baseline is measured.
+- **Cross-agent sharing**: if multiple agents share common tools, can their invocation example indexes be shared or composed?
+
+## Build Order
+
+A suggested sequence for implementation:
+
+1. **Confirm tier 1 is working as expected.** Inline-everything for `tool_count <= 15` should already be in place. Verify cache hit rates and per-request token costs.
+2. **Build the invocation example index.** Generation pipeline, dedup, vector store. This is the asset; the rest of the system depends on it.
+3. **Wire pre-fetch into the tier 2 request path.** Retrieval → top-K → fetch definitions → inject into prompt. Keep the existing manifest and `get_tool` exactly as they are.
+4. **Instrument the metrics above.**
+5. **Tune K, example count per tool, and retrieval context window** based on observed completion rates and round-trip avoidance.
+6. **Iterate on edge cases**: multi-turn drift, tool dependencies, hybrid retrieval.
+
+Ship the simple version of tier 2 first. Resist the urge to build hierarchical retrieval, task-aware tiering, or cross-agent sharing until the basic system is measured and the failure modes are visible.

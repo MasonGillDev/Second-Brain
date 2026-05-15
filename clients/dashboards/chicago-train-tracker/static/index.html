@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chicago Train Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ── Header ── -->
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <rect x="3" y="2" width="16" height="13" rx="3" fill="currentColor" opacity=".9"/>
+            <rect x="6" y="5" width="4" height="4" rx="1" fill="var(--bg-header)"/>
+            <rect x="12" y="5" width="4" height="4" rx="1" fill="var(--bg-header)"/>
+            <rect x="3" y="13" width="16" height="2" rx="1" fill="currentColor" opacity=".5"/>
+            <circle cx="7" cy="18" r="2" fill="currentColor"/>
+            <circle cx="15" cy="18" r="2" fill="currentColor"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Chicago Train Tracker</h1>
+          <p class="brand-sub">Live CTA arrivals</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="update-meta">
+          <span id="last-updated" class="last-updated"></span>
+          <span id="countdown" class="countdown-badge"></span>
+        </div>
+        <button id="refresh-btn" class="icon-btn" title="Refresh now" aria-label="Refresh">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M13.65 2.35A8 8 0 1 0 15 8h-2a6 6 0 1 1-1.06-3.39L10 6.5h4.5V2l-0.85.35z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button id="theme-btn" class="icon-btn" title="Toggle dark/light mode" aria-label="Toggle theme">
+          <svg id="theme-icon-dark" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1a7 7 0 1 0 7 7A7 7 0 0 0 8 1zm0 12.5A5.5 5.5 0 1 1 13.5 8 5.51 5.51 0 0 1 8 13.5z" fill="currentColor"/>
+            <path d="M8 4.5A3.5 3.5 0 1 0 11.5 8 3.5 3.5 0 0 0 8 4.5z" fill="currentColor"/>
+          </svg>
+          <svg id="theme-icon-light" width="16" height="16" viewBox="0 0 16 16" fill="none" style="display:none">
+            <path d="M8 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm0-7.5a.75.75 0 0 0 .75-.75V2a.75.75 0 0 0-1.5 0v.75c0 .414.336.75.75.75zm0 9a.75.75 0 0 0-.75.75V14a.75.75 0 0 0 1.5 0v-.75A.75.75 0 0 0 8 12.5zm5.657-8.157a.75.75 0 0 0-1.06-1.06l-.53.53a.75.75 0 1 0 1.06 1.06l.53-.53zm-9.193 9.193a.75.75 0 0 0-1.06-1.06l-.53.53a.75.75 0 1 0 1.06 1.06l.53-.53zM14 8a.75.75 0 0 0-.75-.75h-.75a.75.75 0 0 0 0 1.5h.75A.75.75 0 0 0 14 8zM2 8a.75.75 0 0 0 .75.75H3.5a.75.75 0 0 0 0-1.5H2.75A.75.75 0 0 0 2 8zm10.657 3.657a.75.75 0 0 0-1.06 1.06l.53.53a.75.75 0 0 0 1.06-1.06l-.53-.53zM3.464 3.464a.75.75 0 0 0-1.06 1.06l.53.53a.75.75 0 0 0 1.06-1.06l-.53-.53z" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Filter Bar ── -->
+  <div class="filter-bar">
+    <div class="filter-inner">
+      <div id="line-pills" class="line-pills" role="group" aria-label="Filter by line"></div>
+    </div>
+  </div>
+
+  <!-- ── Main Content ── -->
+  <main>
+    <div id="error-banner" class="error-banner hidden" role="alert">
+      <div class="error-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <span id="error-msg"></span>
+      <button class="error-dismiss" onclick="document.getElementById('error-banner').classList.add('hidden')" aria-label="Dismiss">&#x2715;</button>
+    </div>
+
+    <div id="results" class="results" aria-live="polite" aria-label="Train arrivals"></div>
+
+    <div id="empty" class="empty-state hidden">
+      <div class="empty-icon">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+          <rect x="8" y="8" width="32" height="24" rx="6" stroke="currentColor" stroke-width="2" opacity=".4"/>
+          <path d="M8 20h32" stroke="currentColor" stroke-width="2" opacity=".4"/>
+          <circle cx="16" cy="38" r="4" stroke="currentColor" stroke-width="2" opacity=".4"/>
+          <circle cx="32" cy="38" r="4" stroke="currentColor" stroke-width="2" opacity=".4"/>
+          <path d="M20 38h8" stroke="currentColor" stroke-width="2" opacity=".4"/>
+          <path d="M22 27l4 4M26 27l-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <p class="empty-title">No arrivals found</p>
+      <p class="empty-sub">Check back in a moment or try a different line</p>
+    </div>
+  </main>
+
+  <!-- ── Footer ── -->
+  <footer>
+    <span>Data: <a href="https://www.transitchicago.com/developers/" target="_blank" rel="noopener">CTA Train Tracker API</a></span>
+    <span>Auto-refreshes every 30s</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

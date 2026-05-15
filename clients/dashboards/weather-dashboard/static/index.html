@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chicago Weather</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3245;
+      --text: #e8eaf6;
+      --muted: #8b91b0;
+      --accent: #5c7cfa;
+      --accent2: #748ffc;
+      --warm: #ff922b;
+      --cold: #74c0fc;
+      --green: #51cf66;
+      --rain: #74c0fc;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f0f2fa;
+        --surface: #ffffff;
+        --surface2: #e8eaf6;
+        --border: #c5cae9;
+        --text: #1a1d27;
+        --muted: #5c6380;
+        --accent: #3d5afe;
+        --accent2: #5c7cfa;
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      overflow-x: hidden;
+    }
+
+    header {
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto 28px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .location {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .location-icon {
+      width: 20px;
+      height: 20px;
+      fill: var(--accent);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    #last-updated {
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    main {
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    /* ── Card base ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px 24px;
+    }
+
+    .card-label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Current conditions (2-col grid) ── */
+    .current-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 540px) {
+      .current-grid { grid-template-columns: 1fr; }
+    }
+
+    .temp-card {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .big-temp {
+      font-size: 5rem;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .condition-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .condition-text {
+      font-size: 1.1rem;
+      font-weight: 500;
+    }
+
+    .feels-like {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    /* ── Stat cards ── */
+    .stat-card {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .stat-unit {
+      font-size: 1rem;
+      font-weight: 400;
+      color: var(--muted);
+    }
+
+    .stat-detail {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* Wind direction arrow */
+    .wind-arrow {
+      display: inline-block;
+      font-size: 1.2rem;
+      transition: transform 0.5s ease;
+    }
+
+    /* ── Precipitation bar ── */
+    .precip-bar-wrap {
+      margin-top: 8px;
+      height: 8px;
+      background: var(--surface2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .precip-bar-fill {
+      height: 100%;
+      background: var(--rain);
+      border-radius: 4px;
+      transition: width 0.6s ease;
+    }
+
+    /* ── Forecast row ── */
+    .forecast-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+      gap: 12px;
+    }
+
+    .forecast-day {
+      background: var(--surface2);
+      border-radius: 12px;
+      padding: 14px 10px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .forecast-day-name {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    .forecast-icon {
+      font-size: 1.6rem;
+      line-height: 1;
+    }
+
+    .forecast-temps {
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .forecast-high { color: var(--warm); }
+    .forecast-low  { color: var(--cold); }
+
+    .forecast-precip {
+      font-size: 0.72rem;
+      color: var(--rain);
+    }
+
+    /* ── Hourly forecast ── */
+    .hourly-scroll {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .hourly-item {
+      background: var(--surface2);
+      border-radius: 12px;
+      padding: 12px 10px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1 1 64px;
+      min-width: 56px;
+    }
+
+    .hourly-item.now {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .hourly-time {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+
+    .hourly-item.now .hourly-time {
+      color: rgba(255,255,255,0.8);
+    }
+
+    .hourly-icon {
+      font-size: 1.3rem;
+      line-height: 1;
+    }
+
+    .hourly-temp {
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    .hourly-precip {
+      font-size: 0.68rem;
+      color: var(--rain);
+    }
+
+    .hourly-item.now .hourly-precip {
+      color: rgba(255,255,255,0.85);
+    }
+
+    /* ── Loading / error ── */
+    .loading {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg {
+      background: #2d1515;
+      border: 1px solid #5c2626;
+      color: #ff6b6b;
+      border-radius: 12px;
+      padding: 16px 20px;
+      text-align: center;
+      font-size: 0.85rem;
+    }
+
+    /* accent dot for live indicator */
+    .live-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      background: var(--green);
+      border-radius: 50%;
+      margin-right: 4px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="location">
+      <svg class="location-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+      </svg>
+      <h1>Chicago, IL</h1>
+    </div>
+    <div class="subtitle">Open-Meteo · Auto-refresh every 30 min</div>
+  </div>
+  <div id="last-updated">Loading…</div>
+</header>
+
+<main id="main-content">
+  <div class="loading">
+    <div class="spinner"></div>
+    Fetching weather data…
+  </div>
+</main>
+
+<script>
+  // Chicago coordinates
+  const LAT = 41.8781;
+  const LON = -87.6298;
+
+  const WMO_CODES = {
+    0:  { label: "Clear sky",          icon: "☀️" },
+    1:  { label: "Mainly clear",       icon: "🌤️" },
+    2:  { label: "Partly cloudy",      icon: "⛅" },
+    3:  { label: "Overcast",           icon: "☁️" },
+    45: { label: "Fog",                icon: "🌫️" },
+    48: { label: "Icy fog",            icon: "🌫️" },
+    51: { label: "Light drizzle",      icon: "🌦️" },
+    53: { label: "Drizzle",            icon: "🌦️" },
+    55: { label: "Heavy drizzle",      icon: "🌧️" },
+    61: { label: "Slight rain",        icon: "🌧️" },
+    63: { label: "Rain",               icon: "🌧️" },
+    65: { label: "Heavy rain",         icon: "🌧️" },
+    71: { label: "Slight snow",        icon: "🌨️" },
+    73: { label: "Snow",               icon: "🌨️" },
+    75: { label: "Heavy snow",         icon: "❄️" },
+    77: { label: "Snow grains",        icon: "🌨️" },
+    80: { label: "Slight showers",     icon: "🌦️" },
+    81: { label: "Showers",            icon: "🌧️" },
+    82: { label: "Violent showers",    icon: "⛈️" },
+    85: { label: "Snow showers",       icon: "🌨️" },
+    86: { label: "Heavy snow showers", icon: "❄️" },
+    95: { label: "Thunderstorm",       icon: "⛈️" },
+    96: { label: "Thunderstorm + hail",icon: "⛈️" },
+    99: { label: "Thunderstorm + hail",icon: "⛈️" },
+  };
+
+  function wmo(code) {
+    return WMO_CODES[code] ?? { label: "Unknown", icon: "🌡️" };
+  }
+
+  const WIND_DIRS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  function windDir(deg) {
+    return WIND_DIRS[Math.round(deg / 22.5) % 16];
+  }
+
+  // C → F
+  function toF(c) { return Math.round(c * 9/5 + 32); }
+
+  function dayName(dateStr, index) {
+    if (index === 0) return "Today";
+    if (index === 1) return "Tmrw";
+    const d = new Date(dateStr + "T12:00:00");
+    return d.toLocaleDateString("en-US", { weekday: "short" });
+  }
+
+  async function fetchWeather() {
+    const url =
+      `https://api.open-meteo.com/v1/forecast` +
+      `?latitude=${LAT}&longitude=${LON}` +
+      `&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,precipitation` +
+      `&hourly=temperature_2m,weather_code,precipitation_probability` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum` +
+      `&temperature_unit=celsius` +
+      `&wind_speed_unit=mph` +
+      `&precipitation_unit=inch` +
+      `&timezone=America%2FChicago` +
+      `&forecast_days=7`;
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  }
+
+  function render(data) {
+    const c = data.current;
+    const d = data.daily;
+    const h = data.hourly;
+
+    const tempF      = toF(c.temperature_2m);
+    const feelsF     = toF(c.apparent_temperature);
+    const windSpd    = Math.round(c.wind_speed_10m);
+    const windDeg    = c.wind_direction_10m;
+    const wdir       = windDir(windDeg);
+    const condition  = wmo(c.weather_code);
+    const precipIn   = c.precipitation;
+
+    // today's precip probability
+    const todayPrecipPct = d.precipitation_probability_max[0] ?? 0;
+
+    const now = new Date();
+    const updatedStr =
+      `<span class="live-dot"></span>Updated ${now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+
+    document.getElementById("last-updated").innerHTML = updatedStr;
+
+    // Build hourly forecast for today
+    const todayStr = d.time[0]; // e.g. "2026-05-08"
+    const nowHour  = new Date().getHours();
+    const hourlyItems = h.time.reduce((acc, ts, i) => {
+      if (!ts.startsWith(todayStr)) return acc;
+      const hour     = parseInt(ts.slice(11, 13), 10);
+      const isNow    = hour === nowHour;
+      const label    = hour === 0 ? "12 AM" : hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`;
+      const info     = wmo(h.weather_code[i]);
+      const tempF    = toF(h.temperature_2m[i]);
+      const pct      = h.precipitation_probability[i] ?? 0;
+      acc.push(`
+        <div class="hourly-item${isNow ? " now" : ""}">
+          <div class="hourly-time">${isNow ? "Now" : label}</div>
+          <div class="hourly-icon">${info.icon}</div>
+          <div class="hourly-temp">${tempF}°F</div>
+          <div class="hourly-precip">${pct > 0 ? `💧 ${pct}%` : "—"}</div>
+        </div>`);
+      return acc;
+    }, []).join("");
+
+    // Build forecast cards (skip index 0 = today already shown)
+    const forecastCards = d.time.slice(0, 7).map((date, i) => {
+      const info   = wmo(d.weather_code[i]);
+      const hiF    = toF(d.temperature_2m_max[i]);
+      const loF    = toF(d.temperature_2m_min[i]);
+      const pct    = d.precipitation_probability_max[i] ?? 0;
+      return `
+        <div class="forecast-day">
+          <div class="forecast-day-name">${dayName(date, i)}</div>
+          <div class="forecast-icon">${info.icon}</div>
+          <div class="forecast-temps">
+            <span class="forecast-high">${hiF}°</span>
+            <span class="forecast-low">${loF}°</span>
+          </div>
+          <div class="forecast-precip">${pct > 0 ? `💧 ${pct}%` : "—"}</div>
+        </div>`;
+    }).join("");
+
+    document.getElementById("main-content").innerHTML = `
+      <!-- Current temp + condition -->
+      <div class="card">
+        <div class="card-label">Current Conditions</div>
+        <div class="current-grid">
+
+          <div class="card temp-card">
+            <div class="big-temp">${tempF}°<span style="font-size:2.5rem;color:var(--muted)">F</span></div>
+            <div class="condition-meta">
+              <div class="condition-text">${condition.icon} ${condition.label}</div>
+              <div class="feels-like">Feels like ${feelsF}°F</div>
+            </div>
+          </div>
+
+          <!-- Wind -->
+          <div class="card stat-card">
+            <div class="card-label">Wind</div>
+            <div class="stat-value">
+              ${windSpd}<span class="stat-unit"> mph</span>
+            </div>
+            <div class="stat-detail">
+              <span class="wind-arrow" style="transform:rotate(${windDeg}deg)">↑</span>
+              ${wdir} (${windDeg}°)
+            </div>
+          </div>
+
+          <!-- Precipitation -->
+          <div class="card stat-card">
+            <div class="card-label">Precipitation today</div>
+            <div class="stat-value">
+              ${todayPrecipPct}<span class="stat-unit">%</span>
+            </div>
+            <div class="stat-detail">Current: ${precipIn.toFixed(2)} in</div>
+            <div class="precip-bar-wrap">
+              <div class="precip-bar-fill" style="width:${todayPrecipPct}%"></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Hourly Forecast -->
+      <div class="card">
+        <div class="card-label">Hourly Forecast — Today</div>
+        <div class="hourly-scroll">
+          ${hourlyItems}
+        </div>
+      </div>
+
+      <!-- 7-day Forecast -->
+      <div class="card">
+        <div class="card-label">7-Day Forecast</div>
+        <div class="forecast-grid">
+          ${forecastCards}
+        </div>
+      </div>
+    `;
+  }
+
+  function showError(msg) {
+    document.getElementById("main-content").innerHTML =
+      `<div class="error-msg">Unable to load weather data: ${msg}<br>Will retry in 30 minutes.</div>`;
+    document.getElementById("last-updated").textContent = "Failed to load";
+  }
+
+  async function refresh() {
+    try {
+      const data = await fetchWeather();
+      render(data);
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
+  // Initial load + auto-refresh every 30 minutes
+  refresh();
+  setInterval(refresh, 30 * 60 * 1000);
+</script>
+</body>
+</html>

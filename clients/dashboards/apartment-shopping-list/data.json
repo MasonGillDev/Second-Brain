@@ -1,0 +1,100 @@
+{
+  "items": [
+    {
+      "id": "1",
+      "name": "Dresser",
+      "category": "Furniture",
+      "bought": false
+    },
+    {
+      "id": "2",
+      "name": "TV mount",
+      "category": "Furniture",
+      "bought": true
+    },
+    {
+      "id": "3",
+      "name": "Cleveland print frame",
+      "category": "Furniture",
+      "bought": true
+    },
+    {
+      "id": "4",
+      "name": "Guitar hooks",
+      "category": "Music",
+      "bought": true
+    },
+    {
+      "id": "5",
+      "name": "Desk lamp",
+      "category": "Lighting",
+      "bought": false
+    },
+    {
+      "id": "6",
+      "name": "Desk cable management",
+      "category": "Organization",
+      "bought": true
+    },
+    {
+      "id": "7",
+      "name": "Pepper",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "8",
+      "name": "Olive oil",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "9",
+      "name": "Tin foil",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "10",
+      "name": "Garlic powder",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "11",
+      "name": "Rice",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "12",
+      "name": "Vinegar",
+      "category": "Pantry",
+      "bought": true
+    },
+    {
+      "id": "e65e7bdc-f048-488b-b633-786dc919cdff",
+      "name": "shelf bracket",
+      "category": "Furniture",
+      "bought": true
+    },
+    {
+      "id": "51020140-f57e-428c-940e-efb2ff51f26b",
+      "name": "bandaids",
+      "category": "Other",
+      "bought": true
+    },
+    {
+      "id": "78902ab7-4f10-46be-b7af-7d178c3846c0",
+      "name": "trash can",
+      "category": "",
+      "bought": false
+    },
+    {
+      "id": "1bb8aa7f-c975-4303-9137-586327d9861c",
+      "name": "broom",
+      "category": "",
+      "bought": false
+    }
+  ]
+}

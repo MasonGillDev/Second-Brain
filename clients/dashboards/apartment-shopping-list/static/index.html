@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apartment Shopping List</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f5f5f0;
+      --surface: #ffffff;
+      --border: #e0ddd8;
+      --text: #1a1a18;
+      --text-muted: #888880;
+      --accent: #4a7c59;
+      --accent-hover: #3a6249;
+      --bought-text: #aaa9a2;
+      --bought-bg: #f9f9f7;
+      --danger: #c0392b;
+      --danger-hover: #a93226;
+      --tag-bg: #eef4f0;
+      --tag-text: #4a7c59;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08);
+      --radius: 10px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #18181a;
+        --surface: #242428;
+        --border: #333338;
+        --text: #e8e8e2;
+        --text-muted: #66665e;
+        --accent: #5a9e6e;
+        --accent-hover: #6ab87e;
+        --bought-text: #555550;
+        --bought-bg: #1e1e20;
+        --danger: #e05545;
+        --danger-hover: #f06655;
+        --tag-bg: #1e2e22;
+        --tag-text: #5a9e6e;
+        --shadow: 0 1px 4px rgba(0,0,0,0.3);
+      }
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    header {
+      max-width: 640px;
+      margin: 0 auto 28px;
+    }
+
+    header h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .stats {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-top: 8px;
+    }
+
+    .stats span {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* Add form */
+    .add-form {
+      max-width: 640px;
+      margin: 0 auto 28px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .add-form input[type="text"] {
+      flex: 1 1 180px;
+      padding: 10px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .add-form input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    .add-form select {
+      flex: 0 1 150px;
+      padding: 10px 12px;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.9rem;
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .add-form select:focus {
+      border-color: var(--accent);
+    }
+
+    .btn-add {
+      padding: 10px 20px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn-add:hover { background: var(--accent-hover); }
+    .btn-add:active { transform: scale(0.98); }
+
+    /* Filter bar */
+    .filter-bar {
+      max-width: 640px;
+      margin: 0 auto 20px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .filter-bar span {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-right: 4px;
+    }
+
+    .filter-btn {
+      padding: 5px 12px;
+      border-radius: 20px;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .filter-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* Category sections */
+    .categories {
+      max-width: 640px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .category-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .category-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bought-bg);
+    }
+
+    .category-name {
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .category-count {
+      font-size: 0.75rem;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      margin-left: auto;
+    }
+
+    /* Items */
+    .item-list {
+      list-style: none;
+    }
+
+    .item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+
+    .item:last-child { border-bottom: none; }
+    .item:hover { background: var(--bought-bg); }
+
+    .item.bought {
+      background: var(--bought-bg);
+    }
+
+    /* Custom checkbox */
+    .checkbox-wrap {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .item-check {
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: block;
+    }
+
+    .item-check:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .item-check:checked::after {
+      content: '';
+      position: absolute;
+      top: 4px;
+      left: 7px;
+      width: 5px;
+      height: 9px;
+      border: 2px solid #fff;
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+
+    .item-name {
+      flex: 1;
+      font-size: 0.95rem;
+      transition: color 0.15s;
+    }
+
+    .item.bought .item-name {
+      color: var(--bought-text);
+      text-decoration: line-through;
+    }
+
+    .btn-delete {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 6px;
+      font-size: 1rem;
+      line-height: 1;
+      opacity: 0;
+      transition: all 0.15s;
+    }
+
+    .item:hover .btn-delete { opacity: 1; }
+    .btn-delete:hover { color: var(--danger); background: rgba(192,57,43,0.08); }
+
+    /* Empty state */
+    .empty {
+      max-width: 640px;
+      margin: 0 auto;
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--text);
+      color: var(--bg);
+      padding: 10px 18px;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.25s;
+      pointer-events: none;
+      z-index: 100;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    /* Loading */
+    .loading {
+      max-width: 640px;
+      margin: 0 auto;
+      text-align: center;
+      padding: 32px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    /* API status badge */
+    .api-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 20px;
+      margin-top: 6px;
+    }
+    .api-status.ok { background: var(--tag-bg); color: var(--tag-text); }
+    .api-status.local { background: #fef3e2; color: #b7791f; }
+    .api-status.err { background: #fdecea; color: #b91c1c; }
+    @media (prefers-color-scheme: dark) {
+      .api-status.local { background: #2d2200; color: #f6ad55; }
+      .api-status.err { background: #2d1111; color: #fc8181; }
+    }
+    .api-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* Error banner */
+    .error-banner {
+      max-width: 640px;
+      margin: 0 auto 16px;
+      background: #fdecea;
+      color: #b91c1c;
+      border: 1px solid #fca5a5;
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      font-size: 0.88rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .error-banner { background: #2d1111; color: #fc8181; border-color: #7f1d1d; }
+    }
+    .error-banner button {
+      margin-left: auto;
+      background: none;
+      border: 1px solid currentColor;
+      color: inherit;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .error-banner button:hover { opacity: 0.75; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Apartment Shopping List</h1>
+    <p>Shared across devices on the same network</p>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <form class="add-form" id="addForm">
+    <input type="text" id="itemName" placeholder="Add an item..." autocomplete="off" required />
+    <select id="itemCategory">
+      <option value="">No category</option>
+      <option value="Furniture">Furniture</option>
+      <option value="Music">Music</option>
+      <option value="Lighting">Lighting</option>
+      <option value="Organization">Organization</option>
+      <option value="Pantry">Pantry</option>
+      <option value="Other">Other</option>
+    </select>
+    <button type="submit" class="btn-add">Add</button>
+  </form>
+
+  <div class="filter-bar">
+    <span>Show:</span>
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="pending">Pending</button>
+    <button class="filter-btn" data-filter="bought">Bought</button>
+  </div>
+
+  <div id="listContainer"></div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const LS_KEY = 'apartment-shopping-list';
+    let items = [];
+    let filter = 'all';
+    let useAPI = true;
+
+    // --- API ---
+    async function fetchItems() {
+      try {
+        const r = await fetch('api/items');
+        if (!r.ok) throw new Error();
+        items = await r.json();
+        useAPI = true;
+      } catch {
+        useAPI = false;
+        items = loadLocal();
+      }
+      render();
+    }
+
+    async function apiAdd(name, category) {
+      if (useAPI) {
+        try {
+          const r = await fetch('api/items', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, category})
+          });
+          if (!r.ok) throw new Error();
+          return await r.json();
+        } catch { useAPI = false; }
+      }
+      const item = {id: crypto.randomUUID(), name, category, bought: false};
+      return item;
+    }
+
+    async function apiToggle(id, bought) {
+      if (useAPI) {
+        try {
+          await fetch(`api/items/${id}`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({bought})
+          });
+          return;
+        } catch { useAPI = false; }
+      }
+    }
+
+    async function apiDelete(id) {
+      if (useAPI) {
+        try {
+          await fetch(`api/items/${id}`, {method: 'DELETE'});
+          return;
+        } catch { useAPI = false; }
+      }
+    }
+
+    // --- LocalStorage fallback ---
+    function loadLocal() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY)) || []; }
+      catch { return []; }
+    }
+
+    function saveLocal() {
+      localStorage.setItem(LS_KEY, JSON.stringify(items));
+    }
+
+    // --- Render ---
+    function getFilteredItems() {
+      if (filter === 'pending') return items.filter(i => !i.bought);
+      if (filter === 'bought') return items.filter(i => i.bought);
+      return items;
+    }
+
+    function groupByCategory(list) {
+      const groups = {};
+      list.forEach(item => {
+        const cat = item.category || 'Uncategorized';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(item);
+      });
+      // Sort categories, Uncategorized last
+      return Object.entries(groups).sort(([a], [b]) => {
+        if (a === 'Uncategorized') return 1;
+        if (b === 'Uncategorized') return -1;
+        return a.localeCompare(b);
+      });
+    }
+
+    function render() {
+      const container = document.getElementById('listContainer');
+      const filtered = getFilteredItems();
+
+      // Stats
+      const total = items.length;
+      const bought = items.filter(i => i.bought).length;
+      const pct = total ? Math.round((bought / total) * 100) : 0;
+      document.getElementById('stats').innerHTML =
+        `<span>${bought}</span> of <span>${total}</span> items checked off &mdash; ${pct}%`;
+
+      if (filtered.length === 0) {
+        container.innerHTML = `<div class="empty">${
+          filter === 'bought' ? 'Nothing bought yet.' :
+          filter === 'pending' ? 'Everything is bought!' :
+          'No items yet. Add something above.'
+        }</div>`;
+        return;
+      }
+
+      const groups = groupByCategory(filtered);
+      container.innerHTML = '';
+
+      groups.forEach(([cat, catItems]) => {
+        const section = document.createElement('div');
+        section.className = 'category-section';
+
+        const remaining = catItems.filter(i => !i.bought).length;
+
+        section.innerHTML = `
+          <div class="category-header">
+            <span class="category-name">${escHtml(cat)}</span>
+            <span class="category-count">${remaining} left</span>
+          </div>
+          <ul class="item-list" id="cat-${escId(cat)}"></ul>
+        `;
+
+        const ul = section.querySelector('ul');
+        catItems.forEach(item => {
+          const li = document.createElement('li');
+          li.className = 'item' + (item.bought ? ' bought' : '');
+          li.dataset.id = item.id;
+          li.innerHTML = `
+            <div class="checkbox-wrap">
+              <input type="checkbox" class="item-check" ${item.bought ? 'checked' : ''} aria-label="Mark ${escHtml(item.name)} as bought" />
+            </div>
+            <span class="item-name">${escHtml(item.name)}</span>
+            <button class="btn-delete" title="Delete item" aria-label="Delete ${escHtml(item.name)}">&#x2715;</button>
+          `;
+
+          li.querySelector('.item-check').addEventListener('change', (e) => {
+            toggleItem(item.id, e.target.checked);
+          });
+
+          li.querySelector('.btn-delete').addEventListener('click', () => {
+            deleteItem(item.id, item.name);
+          });
+
+          ul.appendChild(li);
+        });
+
+        container.appendChild(section);
+      });
+    }
+
+    function escHtml(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function escId(str) {
+      return str.replace(/[^a-zA-Z0-9]/g, '_');
+    }
+
+    // --- Actions ---
+    async function toggleItem(id, bought) {
+      const item = items.find(i => i.id === id);
+      if (!item) return;
+      item.bought = bought;
+      saveLocal();
+      await apiToggle(id, bought);
+      render();
+      toast(bought ? `Checked off "${item.name}"` : `Unchecked "${item.name}"`);
+    }
+
+    async function deleteItem(id, name) {
+      items = items.filter(i => i.id !== id);
+      saveLocal();
+      await apiDelete(id);
+      render();
+      toast(`Removed "${name}"`);
+    }
+
+    document.getElementById('addForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('itemName').value.trim();
+      const category = document.getElementById('itemCategory').value;
+      if (!name) return;
+
+      const item = await apiAdd(name, category);
+      items.push(item);
+      saveLocal();
+      render();
+
+      document.getElementById('itemName').value = '';
+      toast(`Added "${name}"`);
+    });
+
+    // Filter buttons
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        filter = btn.dataset.filter;
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        render();
+      });
+    });
+
+    // --- Toast ---
+    let toastTimer;
+    function toast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+    }
+
+    // --- Init ---
+    fetchItems();
+
+    // Poll every 15s to sync across devices
+    setInterval(fetchItems, 15000);
+  </script>
+</body>
+</html>

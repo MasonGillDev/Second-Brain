@@ -1,0 +1,5 @@
+{
+  "name": "Chicago Train Tracker",
+  "description": "Build a real-time Chicago CTA train tracker dashboard with:\n\n1. Display all 8 CTA train lines (Red, Blue, Brown, Green, Orange, Pink, Purple, Yellow) with their line colors\n2. Show all stops for each ",
+  "created_at": "2026-05-08T13:40:31.192899+00:00"
+}
