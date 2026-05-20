@@ -79,12 +79,20 @@ class VectorStore:
 
         collection.add(documents=texts, metadatas=metadatas, ids=ids)
 
-    def query(self, collection_name: str, query_text: str, top_k: int = 3, where: dict | None = None) -> list[dict]:
-        """Query a collection for relevant memories."""
+    def query(self, collection_name: str, query_text: str, top_k: int = 3, where: dict | None = None,
+              min_relevance: float | None = None) -> list[dict]:
+        """Query a collection for relevant memories.
+
+        min_relevance: per-call override of the relevance floor. Defaults to
+        config.RETRIEVAL_MIN_RELEVANCE. Pass a lower value (e.g. for procedural
+        memories) to admit looser semantic matches.
+        """
         collection = self.collections[collection_name]
 
         if collection.count() == 0:
             return []
+
+        threshold = min_relevance if min_relevance is not None else config.RETRIEVAL_MIN_RELEVANCE
 
         kwargs = {
             "query_texts": [query_text],
@@ -105,7 +113,7 @@ class VectorStore:
             # ChromaDB returns L2 distance; convert to 0-1 relevance score
             relevance = 1 / (1 + distance)
 
-            if relevance < config.RETRIEVAL_MIN_RELEVANCE:
+            if relevance < threshold:
                 continue
 
             doc_id = results["ids"][0][i]

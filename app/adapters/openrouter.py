@@ -63,22 +63,30 @@ class OpenRouterAdapter(LLMAdapter):
         # Parse text
         text = message.get("content")
 
+        # Map finish reason
+        finish = choice.get("finish_reason", "stop")
+        stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
+        truncated = finish == "length"
+
         # Parse tool calls
         tool_calls = []
         for tc in message.get("tool_calls") or []:
             func = tc["function"]
             args = func.get("arguments", "{}")
             if isinstance(args, str):
-                args = json.loads(args)
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError as e:
+                    hint = " (response was cut off by max_tokens — raise MAX_RESPONSE_TOKENS)" if truncated else ""
+                    args = {
+                        "__parse_error__": f"{type(e).__name__}: {e}{hint}",
+                        "__raw_arguments__": args,
+                    }
             tool_calls.append(ToolCall(
                 id=tc["id"],
                 name=func["name"],
                 arguments=args,
             ))
-
-        # Map finish reason
-        finish = choice.get("finish_reason", "stop")
-        stop_reason = "tool_use" if finish == "tool_calls" else "end_turn"
 
         # Parse usage
         usage_data = data.get("usage", {})

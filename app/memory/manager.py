@@ -72,6 +72,15 @@ You have access to several types of memory:
 
 You also have access to tools that let you interact with the filesystem and other services.
 When a task requires reading files, listing directories, or other operations, use the available tools rather than asking the user to do it manually.
+
+## Procedures
+You can save reusable workflows by calling `save_procedure`. Save a procedure when:
+- The user explicitly asks ("save that", "remember how you did that").
+- You just completed a multi-step or non-obvious tool sequence likely to come up again — in that case, offer it: "Want me to save this as a procedure?"
+
+When "Relevant Procedures" appears in Retrieved Memories below, treat those recipes as instructions for THIS request — don't reinvent the workflow.
+
+Do NOT save procedures for single-tool answers, one-off lookups, or tasks unlikely to recur.
 {skill_manifest}
 
 ## Response Style
@@ -273,6 +282,30 @@ class MemoryManager:
 
         sections = []
 
+        # Procedural memories FIRST — these tell the model HOW to handle the request.
+        procedural = self.vector_store.query(
+            "procedural", query,
+            top_k=config.RETRIEVAL_TOP_K_PROCEDURAL,
+            min_relevance=config.RETRIEVAL_MIN_RELEVANCE_PROCEDURAL,
+        )
+        if procedural:
+            items = "\n".join(f"- {m['text']}" for m in procedural)
+            sections.append(f"### Relevant Procedures (follow these recipes when applicable)\n{items}")
+            if config.LOG_TOKEN_USAGE:
+                summary = [f"{m['metadata'].get('name', '?')}@{m['relevance']}" for m in procedural]
+                print(f"  [retrieval] Injected procedures: {summary}")
+        elif config.LOG_TOKEN_USAGE:
+            # Diagnostic: show what was in the procedural collection but rejected.
+            # Use a near-zero floor so we can see actual scores.
+            raw = self.vector_store.query(
+                "procedural", query,
+                top_k=config.RETRIEVAL_TOP_K_PROCEDURAL,
+                min_relevance=0.0,
+            )
+            if raw:
+                summary = [f"{m['metadata'].get('name', '?')}@{m['relevance']}" for m in raw]
+                print(f"  [retrieval] No procedures passed threshold {config.RETRIEVAL_MIN_RELEVANCE_PROCEDURAL}; top candidates: {summary}")
+
         # Long-term memories
         long_term = self.vector_store.query("long_term", query, top_k=config.RETRIEVAL_TOP_K_LONG_TERM)
         if long_term:
@@ -284,12 +317,6 @@ class MemoryManager:
         if episodic:
             items = "\n".join(f"- {m['text']}" for m in episodic)
             sections.append(f"### Relevant Past Interactions\n{items}")
-
-        # Procedural memories
-        procedural = self.vector_store.query("procedural", query, top_k=config.RETRIEVAL_TOP_K_PROCEDURAL)
-        if procedural:
-            items = "\n".join(f"- {m['text']}" for m in procedural)
-            sections.append(f"### Relevant Procedures\n{items}")
 
         # Reference memories (lower priority, higher threshold)
         reference = self.vector_store.query("reference", query, top_k=config.RETRIEVAL_TOP_K_REFERENCE)

@@ -106,6 +106,77 @@ def delete_memory(memory_id: str) -> str:
 
 
 @mcp.tool()
+def save_procedure(name: str, description: str, steps: str) -> str:
+    """
+    Save a reusable procedure to procedural memory. Procedures are retrieved by
+    semantic match against their description, so write the description as a
+    TRIGGER CONDITION — what kind of user request should retrieve this recipe.
+
+    Use when:
+    - The user explicitly asks you to save how you did something.
+    - You just completed a non-obvious multi-step workflow likely to recur.
+
+    Do NOT save for single-tool answers or one-off tasks.
+
+    Args:
+        name: short_snake_case identifier, under 40 chars.
+        description: ONE sentence describing WHEN to apply this procedure.
+                     Good: "When asked to list issues for a repo and the exact name is ambiguous"
+                     Bad: "Lists issues for toolgate"
+        steps: Numbered steps. Reference tool names and what to pass.
+               Example: "1. Call github__list_repos to find the canonical name\n2. Pass the matched name to github__list_issues"
+    """
+    text = f"Procedure: {name}\nDescription: {description}\nSteps:\n{steps}"
+    metadata = {
+        "name": name,
+        "description": description,
+        "type": "agent_saved_procedure",
+    }
+    result = _maintenance.dedup_and_store("procedural", text, metadata)
+    if result["action"] == "SKIP":
+        return f"A similar procedure already exists. Not saved."
+    elif result["action"] == "MERGE":
+        return f"Merged with existing procedure: {name}"
+    else:
+        return f"Saved procedure: {name}"
+
+
+@mcp.tool()
+def search_procedures(query: str, top_k: int = 5) -> str:
+    """
+    Explicitly search procedural memory. Useful when you suspect a procedure
+    exists for the current task but the auto-retrieved 'Relevant Procedures'
+    section didn't surface it (or didn't appear at all).
+
+    Args:
+        query: Natural-language description of what you're trying to do.
+        top_k: Max results (default 5).
+    """
+    results = _vector_store.query("procedural", query, top_k=top_k)
+    if not results:
+        return "No procedures found for that query."
+    lines = []
+    for m in results:
+        score = m.get("relevance", 0)
+        lines.append(f"[{score:.2f}] {m['text']}")
+    return "\n\n".join(lines)
+
+
+@mcp.tool()
+def list_procedures() -> str:
+    """List all saved procedures. Use when the user asks what procedures you know."""
+    all_procs = _vector_store.get_all("procedural", limit=100)
+    if not all_procs:
+        return "No procedures saved yet."
+    lines = [f"Procedures ({len(all_procs)} total):\n"]
+    for p in all_procs:
+        name = p["metadata"].get("name", "?")
+        desc = p["metadata"].get("description", "")
+        lines.append(f"- [{p['id']}] {name}: {desc}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def update_personality(personality: str) -> str:
     """
     Replace your personality/voice description with a new version.

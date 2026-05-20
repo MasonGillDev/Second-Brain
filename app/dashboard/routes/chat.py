@@ -55,26 +55,58 @@ async def chat_ws():
             # Run process in a task so we can stream tool events
             response_text = None
             error_text = None
+            cancelled = False
 
             async def run_agent():
                 nonlocal response_text, error_text
                 try:
                     response_text = await agent.process(text or "What's in this image?", images=images, source="dashboard")
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     error_text = str(e)
 
             task = asyncio.create_task(run_agent())
 
+            async def listen_for_cancel():
+                """Read incoming websocket messages while the agent runs so a
+                cancel click is delivered immediately instead of after completion."""
+                nonlocal cancelled
+                while not task.done():
+                    try:
+                        raw = await websocket.receive()
+                    except asyncio.CancelledError:
+                        return
+                    except Exception:
+                        return
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("type") == "cancel":
+                        agent.cancel()
+                        cancelled = True
+                        await send_json({"type": "cancelled"})
+
+            cancel_listener = asyncio.create_task(listen_for_cancel())
+
             # Poll for tool events while agent runs
-            while not task.done():
-                await asyncio.sleep(0.1)
-                while tool_events:
-                    evt = tool_events.pop(0)
-                    await send_json({
-                        "type": "tool_call",
-                        "name": evt["name"],
-                        "args": evt["args"],
-                    })
+            try:
+                while not task.done():
+                    await asyncio.sleep(0.1)
+                    while tool_events:
+                        evt = tool_events.pop(0)
+                        await send_json({
+                            "type": "tool_call",
+                            "name": evt["name"],
+                            "args": evt["args"],
+                        })
+            finally:
+                cancel_listener.cancel()
+                try:
+                    await cancel_listener
+                except (asyncio.CancelledError, Exception):
+                    pass
 
             # Flush remaining events
             while tool_events:
@@ -89,6 +121,9 @@ async def chat_ws():
 
             if error_text:
                 await send_json({"type": "error", "text": error_text})
+            elif cancelled:
+                # "cancelled" was already sent; suppress duplicate response message
+                pass
             else:
                 if debug:
                     await send_json({

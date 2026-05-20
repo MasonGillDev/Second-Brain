@@ -72,8 +72,8 @@ class AgentCore:
         """Cancel the current processing loop and any active subprocesses."""
         self._cancelled = True
         # Signal the code server to kill its subprocess
-        signal_file = os.path.join(os.path.dirname(__file__), "memory", "data", ".cancel_signal")
-        with open(signal_file, "w") as f:
+        os.makedirs(os.path.dirname(config.CANCEL_SIGNAL_FILE), exist_ok=True)
+        with open(config.CANCEL_SIGNAL_FILE, "w") as f:
             f.write("cancel")
         if self._active_task and not self._active_task.done():
             self._active_task.cancel()
@@ -122,11 +122,11 @@ class AgentCore:
         # Add user message to conversation memory
         self.memory.add_user_message(user_input)
 
-        # Reset cancellation state
+        # Reset cancellation state and register this task so cancel() can interrupt it
         self._cancelled = False
-        signal_file = os.path.join(os.path.dirname(__file__), "memory", "data", ".cancel_signal")
-        if os.path.exists(signal_file):
-            os.remove(signal_file)
+        self._active_task = asyncio.current_task()
+        if os.path.exists(config.CANCEL_SIGNAL_FILE):
+            os.remove(config.CANCEL_SIGNAL_FILE)
 
         # Build context
         system_prompt, messages = self.memory.build_messages(user_input)
@@ -163,71 +163,87 @@ class AgentCore:
         # Tool-use loop
         total_usage = Usage()
         total_tool_calls = 0
+        response = None
 
-        for round_num in range(config.MAX_TOOL_ROUNDS):
-            if self._cancelled:
-                break
+        try:
+            for round_num in range(config.MAX_TOOL_ROUNDS):
+                if self._cancelled:
+                    break
 
-            response = await self.adapter.chat(system_prompt, messages, tools)
-            total_usage = total_usage + response.usage
+                response = await self.adapter.chat(system_prompt, messages, tools)
+                total_usage = total_usage + response.usage
 
-            if not response.tool_calls:
-                break
+                if not response.tool_calls:
+                    break
 
-            # Append assistant message with tool_use blocks
-            messages.append(self.adapter.format_assistant_message(response.raw_message))
+                # Append assistant message with tool_use blocks
+                messages.append(self.adapter.format_assistant_message(response.raw_message))
 
-            # Execute tools
-            tool_results = []
-            tools_changed = False
+                # Execute tools
+                tool_results = []
+                tools_changed = False
 
-            total_tool_calls += len(response.tool_calls)
+                total_tool_calls += len(response.tool_calls)
 
-            for tc in response.tool_calls:
-                # Handle activate_skill meta-tool locally
-                if tc.name == "activate_skill":
-                    skill_name = tc.arguments.get("skill_name", "")
-                    result = self.router.activate_skill(skill_name)
-                    tool_results.append((tc.id, result))
-                    tools_changed = True
+                for tc in response.tool_calls:
+                    if self._cancelled:
+                        break
+                    # Handle activate_skill meta-tool locally
+                    if tc.name == "activate_skill":
+                        skill_name = tc.arguments.get("skill_name", "")
+                        result = self.router.activate_skill(skill_name)
+                        tool_results.append((tc.id, result))
+                        tools_changed = True
+                        if config.LOG_TOKEN_USAGE:
+                            print(f"  [skill] Activated: {skill_name}")
+                        continue
+
+                    if self.on_tool_call:
+                        self.on_tool_call(tc.name, tc.arguments)
+
                     if config.LOG_TOKEN_USAGE:
-                        print(f"  [skill] Activated: {skill_name}")
-                    continue
+                        args_preview = str(tc.arguments)[:80]
+                        print(f"  [tool] {tc.name}({args_preview})")
 
-                if self.on_tool_call:
-                    self.on_tool_call(tc.name, tc.arguments)
+                    if isinstance(tc.arguments, dict) and "__parse_error__" in tc.arguments:
+                        result = f"[ERROR] Could not parse tool arguments: {tc.arguments['__parse_error__']}"
+                    else:
+                        result = await self.router.call_tool(tc.name, tc.arguments)
 
-                if config.LOG_TOKEN_USAGE:
-                    args_preview = str(tc.arguments)[:80]
-                    print(f"  [tool] {tc.name}({args_preview})")
+                    if len(result) > 5000:
+                        result = result[:5000] + "\n[...truncated]"
 
-                result = await self.router.call_tool(tc.name, tc.arguments)
+                    tool_results.append((tc.id, result))
 
-                if len(result) > 5000:
-                    result = result[:5000] + "\n[...truncated]"
+                tool_result_msg = self.adapter.format_tool_results(tool_results)
+                if isinstance(tool_result_msg, list):
+                    messages.extend(tool_result_msg)
+                else:
+                    messages.append(tool_result_msg)
 
-                tool_results.append((tc.id, result))
+                if self._cancelled:
+                    break
 
-            tool_result_msg = self.adapter.format_tool_results(tool_results)
-            if isinstance(tool_result_msg, list):
-                messages.extend(tool_result_msg)
-            else:
-                messages.append(tool_result_msg)
+                # Rebuild tool list if skills were activated this round
+                if tools_changed:
+                    tools = self._build_tools()
 
-            if self._cancelled:
-                break
-
-            # Rebuild tool list if skills were activated this round
-            if tools_changed:
-                tools = self._build_tools()
-
-            if round_num == config.MAX_TOOL_ROUNDS - 1:
-                print(f"  [warning] Hit max tool rounds ({config.MAX_TOOL_ROUNDS})")
+            # Hit the round cap while the agent still wanted to call tools:
+            # make one final call WITHOUT tools so it answers from the results
+            # gathered so far, instead of returning the empty/partial text that
+            # accompanied the last tool call.
+            if response and response.tool_calls and not self._cancelled:
+                print(f"  [warning] Hit max tool rounds ({config.MAX_TOOL_ROUNDS}); requesting final answer")
+                response = await self.adapter.chat(system_prompt, messages, None)
+                total_usage = total_usage + response.usage
+        except asyncio.CancelledError:
+            # cancel() called _active_task.cancel(); treat as a clean cancellation
+            self._cancelled = True
 
         if self._cancelled:
             assistant_text = "Cancelled."
         else:
-            assistant_text = response.text or ""
+            assistant_text = (response.text if response else "") or ""
 
         # Log token usage
         if config.LOG_TOKEN_USAGE:

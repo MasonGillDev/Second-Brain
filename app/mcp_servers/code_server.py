@@ -12,6 +12,7 @@ Three tools:
 
 import sys
 import os
+import glob
 import subprocess
 import json
 import time
@@ -30,22 +31,29 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("code")
 
 # Claude Code CLI path
-CLAUDE_CLI = "/opt/homebrew/bin/claude"
+CLAUDE_CLI = "/Users/masongill/.local/bin/claude"
 
 # Track active subprocess so we can clean up on exit
 _active_proc: subprocess.Popen | None = None
 
 
 def _cleanup():
-    """Kill any active Claude Code subprocess on exit."""
+    """Kill any active Claude Code subprocess (and its children) on exit."""
     global _active_proc
     if _active_proc and _active_proc.poll() is None:
         print("  [code] Cleaning up active subprocess...", file=sys.stderr, flush=True)
-        _active_proc.terminate()
+        try:
+            pgid = os.getpgid(_active_proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            _active_proc.terminate()
         try:
             _active_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            _active_proc.kill()
+            try:
+                os.killpg(os.getpgid(_active_proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                _active_proc.kill()
         _active_proc = None
 
 
@@ -95,11 +103,45 @@ CODING_DISALLOWED_TOOLS = [
 ]
 
 
+CLAUDE_PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+
+def _resolve_session_id(session_id: str) -> tuple[str, str | None]:
+    """Resolve a possibly-short session id to the full UUID `claude --resume`
+    needs. The hub/UI often shows only the 8-char prefix; accept a prefix and
+    look up the matching transcript file in ~/.claude/projects.
+
+    Returns (resolved_id, error). Empty input -> ("", None). On ambiguity or no
+    match, returns ("", "[ERROR] ...") so the caller can surface it.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return "", None
+
+    matches: set[str] = set()
+    for proj in glob.glob(os.path.join(CLAUDE_PROJECTS_DIR, "*")):
+        for f in glob.glob(os.path.join(proj, f"{sid}*.jsonl")):
+            stem = os.path.basename(f)[: -len(".jsonl")]
+            if stem == sid:
+                return sid, None  # exact full-id match wins
+            matches.add(stem)
+
+    if len(matches) == 1:
+        return next(iter(matches)), None
+    if not matches:
+        return "", f"[ERROR] No Claude Code session found matching id '{sid}'."
+    return "", (
+        f"[ERROR] Session id '{sid}' is ambiguous — it matches {len(matches)} "
+        "sessions. Pass the full session id."
+    )
+
+
 def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
                 disallowed_tools: list[str] | None = None,
                 max_turns: int = DEFAULT_MAX_TURNS,
                 model: str = "sonnet",
-                resume: bool = False) -> str:
+                resume: bool = False,
+                session_id: str = "") -> str:
     """Run Claude Code headless with streaming logs and return the result."""
     if not os.path.isdir(working_directory):
         return f"[ERROR] Directory does not exist: {working_directory}"
@@ -121,11 +163,19 @@ def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
         "--allowed-tools", *allowed_tools,
     ]
 
-    # Resume previous session if available
+    # Resume a session: an explicitly-passed session_id wins; otherwise fall
+    # back to the last session we ran for this working directory.
     real_wd = os.path.realpath(working_directory)
-    if resume and real_wd in _sessions:
-        cmd.extend(["--resume", _sessions[real_wd]])
-        print(f"  [code] Resuming session {_sessions[real_wd][:12]}...", file=sys.stderr, flush=True)
+    resume_id = session_id.strip()
+    if not resume_id and resume and real_wd in _sessions:
+        resume_id = _sessions[real_wd]
+    if resume_id:
+        # `claude --resume` requires the full UUID; accept a short prefix.
+        resume_id, err = _resolve_session_id(resume_id)
+        if err:
+            return err
+        cmd.extend(["--resume", resume_id])
+        print(f"  [code] Resuming session {resume_id[:12]}...", file=sys.stderr, flush=True)
 
     if disallowed_tools:
         cmd.extend(["--disallowed-tools", *disallowed_tools])
@@ -138,32 +188,41 @@ def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,  # own process group so cancel can kill children too
         )
         _active_proc = proc
 
         result_text = ""
         result_cost = 0
         result_turns = "?"
-        signal_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                   "memory", "data", ".cancel_signal")
+        signal_file = config.CANCEL_SIGNAL_FILE
 
         import selectors
         sel = selectors.DefaultSelector()
         sel.register(proc.stdout, selectors.EVENT_READ)
 
         idle_timeout = 240  # kill if no output for 2 minutes
+        poll_interval = 0.5  # how often to re-check cancel signal / timeouts
         total_timeout = max_turns * 60  # rough cap based on turns
         start_time = time.time()
+        last_output_time = time.time()
 
         while True:
-            # Check for cancellation
+            # Check for cancellation (polled every poll_interval seconds)
             if os.path.exists(signal_file):
                 print("  [code] Cancellation signal received, terminating...", file=sys.stderr, flush=True)
-                proc.terminate()
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        proc.kill()
                 _active_proc = None
                 return "[CANCELLED] Code task was cancelled by user."
 
@@ -180,23 +239,26 @@ def _run_claude(task: str, working_directory: str, allowed_tools: list[str],
                 partial = f"\n\n[Claude Code: timed out after {int(elapsed)}s]"
                 return (result_text + partial) if result_text else "[ERROR] Claude Code timed out."
 
-            # Wait for output with idle timeout
-            ready = sel.select(timeout=idle_timeout)
+            # Wait for output, but wake up frequently to check the cancel signal
+            ready = sel.select(timeout=poll_interval)
             if not ready:
-                # No output for idle_timeout seconds — likely hung
-                print(f"  [code] No output for {idle_timeout}s, terminating...", file=sys.stderr, flush=True)
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                _active_proc = None
-                partial = f"\n\n[Claude Code: killed — no output for {idle_timeout}s]"
-                return (result_text + partial) if result_text else "[ERROR] Claude Code appears hung (no output)."
+                # No output yet — see if we've crossed the idle threshold
+                if time.time() - last_output_time > idle_timeout:
+                    print(f"  [code] No output for {idle_timeout}s, terminating...", file=sys.stderr, flush=True)
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    _active_proc = None
+                    partial = f"\n\n[Claude Code: killed — no output for {idle_timeout}s]"
+                    return (result_text + partial) if result_text else "[ERROR] Claude Code appears hung (no output)."
+                continue
 
             line = proc.stdout.readline()
             if not line:
                 break  # EOF — process finished
+            last_output_time = time.time()
 
             line = line.strip()
             if not line:
@@ -291,7 +353,7 @@ def search_code(query: str, top_k: int = 12) -> str:
 
 
 @mcp.tool()
-def code_research(task: str, working_directory: str, resume: bool = True) -> str:
+def code_research(task: str, working_directory: str, resume: bool = True, session_id: str = "") -> str:
     """
     Research a codebase using Claude Code (read-only, safe).
     Use for: understanding code, finding patterns, exploring architecture,
@@ -305,6 +367,11 @@ def code_research(task: str, working_directory: str, resume: bool = True) -> str
         task: What to research or find out. Be specific.
         working_directory: Absolute path to the project directory.
         resume: If true, resume the last session for this project (default true).
+        session_id: Pick up a specific existing Claude Code session by its id,
+            continuing that conversation's context. Use this to resume one of the
+            user's own sessions (e.g. an id from the claude_hub tools). Takes
+            precedence over `resume`. Pass `working_directory` matching that
+            session's cwd. Leave empty to start fresh / use the project's last session.
     """
     return _run_claude(
         task=task,
@@ -314,11 +381,12 @@ def code_research(task: str, working_directory: str, resume: bool = True) -> str
         max_turns=RESEARCH_MAX_TURNS,
         model="sonnet",
         resume=resume,
+        session_id=session_id,
     )
 
 
 @mcp.tool()
-def code_task(task: str, working_directory: str, max_turns: int = DEFAULT_MAX_TURNS, resume: bool = True) -> str:
+def code_task(task: str, working_directory: str, max_turns: int = DEFAULT_MAX_TURNS, resume: bool = True, session_id: str = "") -> str:
     """
     Delegate a coding task to Claude Code (can read, write, and edit files).
     Use for: writing code, fixing bugs, refactoring, creating files,
@@ -334,6 +402,11 @@ def code_task(task: str, working_directory: str, max_turns: int = DEFAULT_MAX_TU
         working_directory: Absolute path to the project directory.
         max_turns: Max agent loops (default 10, cap 25).
         resume: If true, resume the last session for this project (default true).
+        session_id: Pick up a specific existing Claude Code session by its id,
+            continuing that conversation's context. Use this to take over one of
+            the user's own sessions (e.g. an id from the claude_hub tools). Takes
+            precedence over `resume`. Pass `working_directory` matching that
+            session's cwd. Leave empty to start fresh / use the project's last session.
     """
     max_turns = min(max_turns, 25)
 
@@ -345,6 +418,7 @@ def code_task(task: str, working_directory: str, max_turns: int = DEFAULT_MAX_TU
         max_turns=max_turns,
         model="sonnet",
         resume=resume,
+        session_id=session_id,
     )
 
 

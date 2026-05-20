@@ -5,6 +5,8 @@ Tune these values to optimize performance vs. token cost.
 
 import os as _os
 
+from keychain import get_secret as _get_secret
+
 # Base directories
 APP_DIR = _os.path.dirname(_os.path.abspath(__file__))
 PROJECT_ROOT = _os.path.dirname(APP_DIR)
@@ -19,8 +21,11 @@ MODEL = "qwen/qwen3.5-397b-a17b"
 # Model used for summarization (can use a cheaper/faster model to save cost)
 SUMMARIZATION_MODEL = "claude-haiku-4-5-20251001"
 
-# Max tokens for the agent's response
-MAX_RESPONSE_TOKENS = 1024
+# Max tokens for the agent's response.
+# Must be large enough to fit tool-call arguments — long task prompts passed
+# to code_task can exceed 1k tokens of JSON. Truncation here produces
+# unterminated-string JSONDecodeErrors in the adapter.
+MAX_RESPONSE_TOKENS = 8192
 
 # =============================================================================
 # CONTEXT WINDOW BUDGET
@@ -61,7 +66,11 @@ CHROMA_PERSIST_DIR = _os.path.join(APP_DIR, "memory", "data", "chroma")
 RETRIEVAL_TOP_K_LONG_TERM = 3
 RETRIEVAL_TOP_K_EPISODIC = 2
 RETRIEVAL_TOP_K_DOCUMENTS = 2
-RETRIEVAL_TOP_K_PROCEDURAL = 2
+RETRIEVAL_TOP_K_PROCEDURAL = 5
+
+# Procedures use a lower threshold than long_term — even loosely related
+# recipes are useful as scaffolding for the model.
+RETRIEVAL_MIN_RELEVANCE_PROCEDURAL = 0.35
 
 # Minimum relevance score (0-1) to include a retrieved memory.
 # Higher = stricter filtering = fewer but more relevant results = lower cost.
@@ -188,6 +197,9 @@ SESSION_FILE = _os.path.join(APP_DIR, "memory", "data", "session.json")
 # Agent-editable personality file. The agent can update this to refine its own voice.
 PERSONALITY_FILE = _os.path.join(APP_DIR, "memory", "data", "personality.txt")
 
+# Cross-process cancel signal: agent writes this file, code_server subprocess polls it.
+CANCEL_SIGNAL_FILE = _os.path.join(APP_DIR, "memory", "data", ".cancel_signal")
+
 # Max characters for the personality block (keeps system prompt lean)
 PERSONALITY_MAX_CHARS = 500
 
@@ -230,6 +242,11 @@ MCP_SERVERS = {
         "args": [_os.path.join(APP_DIR, "mcp_servers", "imessage_server.py")],
         "env": None,
     },
+    "claude_hub": {
+        "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
+        "args": [_os.path.join(APP_DIR, "mcp_servers", "claude_hub_server.py")],
+        "env": {"CLAUDE_HUB_URL": _os.environ.get("CLAUDE_HUB_URL", "http://localhost:3000")},
+    },
     "fetch": {
         "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
         "args": ["-m", "mcp_server_fetch"],
@@ -254,9 +271,11 @@ MCP_SERVERS = {
         "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "toolgate-mcp"),
         "args": [],
         "env": {
-            "TOOLGATE_API_KEY": _os.environ.get("TOOLGATE_API_KEY", "tg_sk_6E1mr1XFhccaNOJRwFnQ1n1LWDGN2VzBwHctPQLDEY"),
+            # Secrets live in the macOS Keychain (see app/keychain.py), never in source.
+            # Env var still wins if set, so deploys can override without Keychain.
+            "TOOLGATE_API_KEY": _os.environ.get("TOOLGATE_API_KEY") or _get_secret("toolgate-api-key"),
             "TOOLGATE_BASE_URL": _os.environ.get("TOOLGATE_BASE_URL", "http://localhost:5050"),
-            "TOOLGATE_AGENT_ID": _os.environ.get("TOOLGATE_AGENT_ID", "eb733ca6-39e5-4518-8972-4488646d7d82"),
+            "TOOLGATE_AGENT_ID": _os.environ.get("TOOLGATE_AGENT_ID") or _get_secret("toolgate-agent-id"),
             "TOOLGATE_CREDENTIALS": _os.environ.get("TOOLGATE_CREDENTIALS", "{}"),
         },
     },
@@ -285,6 +304,7 @@ SKILL_MANIFEST = {
     "calendar": "View and manage Google Calendar events (create, list, search, update, delete).",
     "scheduler": "Create and manage recurring scheduled tasks (cron-like jobs, daily reminders).",
     "code": "Delegate coding tasks to Claude Code — research codebases, write/edit code, and manage background processes (start/stop dev servers, etc.).",
+    "claude_hub": "Observe and control your Claude Code sessions via Claude Hub — list projects/sessions, check which need attention, rename/flag them, and resume or start sessions in a terminal.",
     "imessage": "Read iMessage history — get recent messages, search conversations, check unread messages.",
     "fetch": "Fetch a URL and extract its contents as markdown. Read web pages, articles, and documentation.",
     "music": "Control Apple Music — play songs/artists/playlists, pause, skip, search library, get now playing, set volume.",
@@ -297,7 +317,7 @@ SKILL_MANIFEST = {
 ALWAYS_INCLUDE_SERVERS = ["memory", "toolgate"]
 
 # Maximum tool-call rounds per user message (safety limit to prevent infinite loops)
-MAX_TOOL_ROUNDS = 7
+MAX_TOOL_ROUNDS = 25
 
 # Telegram user ID for scheduled task notifications
 TELEGRAM_NOTIFY_USER_ID = 6080568335
