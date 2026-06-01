@@ -56,6 +56,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_source ON logs(source);
     """)
+    # Migration: add `details` column for full, expandable log content
+    # (full tool args + result, full agent replies). NULL for plain log lines.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
+    if "details" not in cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN details TEXT")
     conn.commit()
 
 
@@ -74,15 +79,27 @@ def log_api_call(source: str, model: str, input_tokens: int, output_tokens: int,
         conn.commit()
 
 
-def log_message(level: str, source: str, message: str):
-    """Persist a log message."""
+def log_message(level: str, source: str, message: str, details: str | None = None):
+    """Persist a log message. `details` holds full, expandable content (optional)."""
     with _lock:
         conn = _get_conn()
         conn.execute(
-            "INSERT INTO logs (timestamp, level, source, message) VALUES (?, ?, ?, ?)",
-            (time.time(), level, source, message),
+            "INSERT INTO logs (timestamp, level, source, message, details) VALUES (?, ?, ?, ?, ?)",
+            (time.time(), level, source, message, details),
         )
         conn.commit()
+
+
+def prune_logs(max_age_days: float) -> int:
+    """Delete log entries older than max_age_days. Returns rows removed."""
+    if max_age_days <= 0:
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute("DELETE FROM logs WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+        return cur.rowcount
 
 
 def compute_cost(model: str, input_tokens: int, output_tokens: int) -> float:

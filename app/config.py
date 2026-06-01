@@ -63,18 +63,25 @@ MAX_SUMMARY_TOKENS = int(TOTAL_CONTEXT_BUDGET * BUDGET_SUMMARY)
 CHROMA_PERSIST_DIR = _os.path.join(APP_DIR, "memory", "data", "chroma")
 
 # Number of results to retrieve per collection when building context
-RETRIEVAL_TOP_K_LONG_TERM = 3
+RETRIEVAL_TOP_K_LONG_TERM = 8
 RETRIEVAL_TOP_K_EPISODIC = 2
 RETRIEVAL_TOP_K_DOCUMENTS = 2
 RETRIEVAL_TOP_K_PROCEDURAL = 5
 
-# Procedures use a lower threshold than long_term — even loosely related
-# recipes are useful as scaffolding for the model.
-RETRIEVAL_MIN_RELEVANCE_PROCEDURAL = 0.35
+# Procedures must be STRONGLY relevant — loosely-related recipes were getting
+# injected as scaffolding and producing bad results, so this floor is set high
+# (above long_term's) to admit only procedures that clearly match the request.
+RETRIEVAL_MIN_RELEVANCE_PROCEDURAL = 0.6
 
 # Minimum relevance score (0-1) to include a retrieved memory.
 # Higher = stricter filtering = fewer but more relevant results = lower cost.
 RETRIEVAL_MIN_RELEVANCE = 0.45
+
+# Long-term memories get a stricter floor than the global default so only
+# strongly-relevant facts are injected (less noise). Paired with a higher
+# top_k (above) so that when several strongly-relevant facts exist, more of
+# them make it in rather than being capped at 3.
+RETRIEVAL_MIN_RELEVANCE_LONG_TERM = 0.55
 
 # Minimum word count in a user message to trigger memory retrieval.
 # Short messages like "yes", "ok", "thanks" skip retrieval entirely to save tokens.
@@ -186,6 +193,12 @@ LOG_TOKEN_USAGE = True
 
 # SQLite database for cost tracking and persistent logs
 DB_PATH = _os.path.join(APP_DIR, "memory", "data", "secondbrain.db")
+
+# Activity log retention: delete log entries older than this many days
+LOG_RETENTION_DAYS = 3
+
+# Max size (bytes) of a single expandable log detail blob (full tool args/result/reply)
+LOG_DETAIL_MAX_BYTES = 256 * 1024
 
 # =============================================================================
 # SESSION PERSISTENCE

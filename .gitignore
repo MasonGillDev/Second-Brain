@@ -5,3 +5,4 @@ app/memory/data/
 .DS_Store
 .cync_tokens.json
 clients/watchos/
+memory-backup-*.json

@@ -8,9 +8,12 @@
     let polling = false;
     let loaded = false;
 
+    let expandAll = false;
+
     function sourceClass(source) {
         const map = {
             tool: 'log-line-tool',
+            agent: 'log-line-agent',
             memory: 'log-line-memory',
             sleep: 'log-line-sleep',
             tokens: 'log-line-tokens',
@@ -29,7 +32,24 @@
         line.className = 'log-entry ' + (levelClass(entry.level) || sourceClass(entry.source));
         const ts = new Date(entry.timestamp * 1000).toLocaleTimeString();
         const badge = entry.source ? `<span class="log-source-tag">${entry.source}</span>` : '';
-        line.innerHTML = `<span class="log-ts">${ts}</span>${badge}<span class="log-msg">${escapeHtml(entry.message)}</span>`;
+        const hasDetails = !!entry.details;
+        const caret = hasDetails ? `<span class="log-caret">▶</span>` : `<span class="log-caret-spacer"></span>`;
+
+        const row = document.createElement('div');
+        row.className = 'log-row';
+        row.innerHTML = `${caret}<span class="log-ts">${ts}</span>${badge}<span class="log-msg">${escapeHtml(entry.message)}</span>`;
+        line.appendChild(row);
+
+        if (hasDetails) {
+            line.classList.add('has-details');
+            const pre = document.createElement('pre');
+            pre.className = 'log-details';
+            pre.textContent = entry.details;
+            line.appendChild(pre);
+            row.style.cursor = 'pointer';
+            row.addEventListener('click', () => line.classList.toggle('expanded'));
+            if (expandAll) line.classList.add('expanded');
+        }
         return line;
     }
 
@@ -117,5 +137,13 @@
         stream.innerHTML = '';
         nextId = 0;
         loaded = false;
+    });
+
+    document.getElementById('logs-expand-all').addEventListener('click', (e) => {
+        expandAll = !expandAll;
+        e.target.textContent = expandAll ? 'Collapse all' : 'Expand all';
+        stream.querySelectorAll('.log-entry.has-details').forEach(el => {
+            el.classList.toggle('expanded', expandAll);
+        });
     });
 })();

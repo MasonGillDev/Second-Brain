@@ -8,6 +8,7 @@ Interfaces just call `agent.process(message)` and get a response.
 import asyncio
 import json
 import os
+import sys
 import config
 from memory.manager import MemoryManager
 from skills.router import ToolRouter
@@ -201,14 +202,14 @@ class AgentCore:
                     if self.on_tool_call:
                         self.on_tool_call(tc.name, tc.arguments)
 
-                    if config.LOG_TOKEN_USAGE:
-                        args_preview = str(tc.arguments)[:80]
-                        print(f"  [tool] {tc.name}({args_preview})")
-
                     if isinstance(tc.arguments, dict) and "__parse_error__" in tc.arguments:
                         result = f"[ERROR] Could not parse tool arguments: {tc.arguments['__parse_error__']}"
                     else:
                         result = await self.router.call_tool(tc.name, tc.arguments)
+
+                    # Persist the full call + result to the Activity Log (expandable),
+                    # before truncating the copy that goes back to the model.
+                    self._log_tool_call(tc.name, tc.arguments, result)
 
                     if len(result) > 5000:
                         result = result[:5000] + "\n[...truncated]"
@@ -245,6 +246,10 @@ class AgentCore:
         else:
             assistant_text = (response.text if response else "") or ""
 
+        # Persist the full agent reply to the Activity Log (expandable)
+        if not self._cancelled:
+            self._log_agent_reply(assistant_text)
+
         # Log token usage
         if config.LOG_TOKEN_USAGE:
             input_cost = (total_usage.input_tokens / 1000) * config.INPUT_COST_PER_1K
@@ -277,6 +282,49 @@ class AgentCore:
         self.memory.conversation.save_session()
 
         return assistant_text
+
+    @staticmethod
+    def _cap(text: str) -> str:
+        """Cap a log detail blob at LOG_DETAIL_MAX_BYTES, marking truncation."""
+        cap = config.LOG_DETAIL_MAX_BYTES
+        if len(text) <= cap:
+            return text
+        return text[:cap] + f"\n[...truncated at {cap // 1024} KB]"
+
+    def _log_tool_call(self, name: str, arguments, result: str):
+        """Persist a full tool call + result as one expandable Activity Log entry."""
+        if not config.LOG_TOKEN_USAGE:
+            return
+        try:
+            args_str = (json.dumps(arguments, indent=2, default=str)
+                        if isinstance(arguments, (dict, list)) else str(arguments))
+        except Exception:
+            args_str = str(arguments)
+        preview = " ".join(args_str.split())[:80]
+        summary = f"{name}({preview})"
+        details = (f"▼ Arguments\n{self._cap(args_str)}\n\n"
+                   f"▼ Result ({len(result):,} chars)\n{self._cap(result)}")
+        try:
+            sys.__stdout__.write(f"  [tool] {summary}\n")  # console echo, not re-captured to DB
+        except Exception:
+            pass
+        try:
+            import db
+            db.log_message("info", "tool", summary, details=details)
+        except Exception:
+            pass
+
+    def _log_agent_reply(self, text: str):
+        """Persist the full agent reply as an expandable Activity Log entry."""
+        if not config.LOG_TOKEN_USAGE or not text:
+            return
+        preview = " ".join(text.split())[:80]
+        details = self._cap(text) if (len(text.strip()) > 80 or "\n" in text) else None
+        try:
+            import db
+            db.log_message("info", "agent", preview, details=details)
+        except Exception:
+            pass
 
     @staticmethod
     def _tool_messages_to_text(tool_messages: list[dict]) -> str:

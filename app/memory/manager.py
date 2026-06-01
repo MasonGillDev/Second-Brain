@@ -306,11 +306,30 @@ class MemoryManager:
                 summary = [f"{m['metadata'].get('name', '?')}@{m['relevance']}" for m in raw]
                 print(f"  [retrieval] No procedures passed threshold {config.RETRIEVAL_MIN_RELEVANCE_PROCEDURAL}; top candidates: {summary}")
 
-        # Long-term memories
-        long_term = self.vector_store.query("long_term", query, top_k=config.RETRIEVAL_TOP_K_LONG_TERM)
+        # Long-term memories — stricter floor than the global default to keep
+        # noise out, with a higher top_k so multiple strong matches can be kept.
+        long_term = self.vector_store.query(
+            "long_term", query,
+            top_k=config.RETRIEVAL_TOP_K_LONG_TERM,
+            min_relevance=config.RETRIEVAL_MIN_RELEVANCE_LONG_TERM,
+        )
         if long_term:
             items = "\n".join(f"- {m['text']}" for m in long_term)
             sections.append(f"### Relevant Knowledge\n{items}")
+            if config.LOG_TOKEN_USAGE:
+                summary = [f"{m['relevance']}" for m in long_term]
+                print(f"  [retrieval] Injected {len(long_term)} long-term memories @ scores: {summary}")
+        elif config.LOG_TOKEN_USAGE:
+            # Diagnostic: show top candidates that missed the threshold so the
+            # floor can be tuned. Near-zero floor reveals actual scores.
+            raw = self.vector_store.query(
+                "long_term", query,
+                top_k=config.RETRIEVAL_TOP_K_LONG_TERM,
+                min_relevance=0.0,
+            )
+            if raw:
+                summary = [f"{m['relevance']}" for m in raw]
+                print(f"  [retrieval] No long-term memories passed threshold {config.RETRIEVAL_MIN_RELEVANCE_LONG_TERM}; top candidates: {summary}")
 
         # Episodic memories
         episodic = self.vector_store.query("episodic", query, top_k=config.RETRIEVAL_TOP_K_EPISODIC)

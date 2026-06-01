@@ -8,6 +8,7 @@ import sys
 import io
 import re
 import time
+import asyncio
 import logging
 import collections
 from pathlib import Path
@@ -16,6 +17,7 @@ from quart import Quart
 from agent.core import AgentCore
 from memory.vector_store import VectorStore
 from keychain import get_secret
+import config
 import db
 
 
@@ -89,6 +91,18 @@ class LogCapture(io.TextIOBase):
         return level, source
 
 
+async def _prune_logs_loop():
+    """Periodically delete Activity Log entries older than the retention window."""
+    while True:
+        try:
+            removed = await asyncio.to_thread(db.prune_logs, config.LOG_RETENTION_DAYS)
+            if removed:
+                print(f"  [dashboard] Pruned {removed} logs older than {config.LOG_RETENTION_DAYS} days")
+        except Exception:
+            pass
+        await asyncio.sleep(3600)  # hourly
+
+
 class _QuietLightsFilter(logging.Filter):
     """Suppress access log noise from iPad polling /api/lights every 4s."""
     def filter(self, record):
@@ -126,6 +140,7 @@ def create_app():
         )
         await app.agent.start()
         app.vector_store = app.agent.memory.vector_store
+        app.prune_task = asyncio.create_task(_prune_logs_loop())
         print("  [dashboard] Agent started")
 
         # Start voice menu bar app as subprocess
@@ -144,6 +159,10 @@ def create_app():
 
     @app.after_serving
     async def shutdown():
+        # Stop log pruning task
+        if getattr(app, "prune_task", None):
+            app.prune_task.cancel()
+
         # Stop voice app
         if getattr(app, "voice_process", None) and app.voice_process.poll() is None:
             app.voice_process.terminate()
