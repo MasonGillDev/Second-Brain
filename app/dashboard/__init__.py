@@ -33,16 +33,23 @@ class LogCapture(io.TextIOBase):
         self.buffer = buffer
         self.subscribers = subscribers
 
-    # Endpoints to exclude from log capture (prevent feedback loops)
-    _SKIP_PATTERNS = ("/api/logs", "/api/costs", "/api/lights")
+    # Endpoints to exclude from log capture (prevent feedback loops + sub-dashboard noise)
+    _SKIP_PATTERNS = ("/api/logs", "/api/costs", "/api/lights", "/d/")
+
+    # Path segment identifying sub-dashboard code (used for stack-frame check)
+    _SUB_DASHBOARD_PATH = os.sep + os.path.join("clients", "dashboards") + os.sep
 
     def write(self, text):
         self.original.write(text)
         if text.strip():
             msg = text.strip()
 
-            # Skip logging requests to our own polling endpoints
+            # Skip logging requests to our own polling endpoints + sub-dashboard URLs
             if any(p in msg for p in self._SKIP_PATTERNS):
+                return len(text)
+
+            # Skip prints originating from sub-dashboard code (clients/dashboards/*)
+            if self._called_from_sub_dashboard():
                 return len(text)
 
             entry = {"ts": time.time(), "text": msg}
@@ -55,6 +62,19 @@ class LogCapture(io.TextIOBase):
             except Exception:
                 pass  # don't break stdout on db errors
         return len(text)
+
+    @classmethod
+    def _called_from_sub_dashboard(cls) -> bool:
+        """True if any frame above us belongs to clients/dashboards/*."""
+        frame = sys._getframe(1)
+        depth = 0
+        while frame is not None and depth < 40:
+            fname = frame.f_code.co_filename
+            if cls._SUB_DASHBOARD_PATH in fname:
+                return True
+            frame = frame.f_back
+            depth += 1
+        return False
 
     def flush(self):
         self.original.flush()
@@ -187,6 +207,7 @@ def create_app():
     from dashboard.routes.voice import voice_bp
     from dashboard.routes.lights import lights_bp
     from dashboard.routes.dashboards import dashboards_bp, register_dashboard_apis
+    from dashboard.routes.projects import projects_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -201,6 +222,7 @@ def create_app():
     app.register_blueprint(voice_bp)
     app.register_blueprint(lights_bp)
     app.register_blueprint(dashboards_bp)
+    app.register_blueprint(projects_bp)
 
     # Load API blueprints from clients/dashboards/*/api.py
     register_dashboard_apis(app)

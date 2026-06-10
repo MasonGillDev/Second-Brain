@@ -63,6 +63,11 @@ def init_db():
         conn.execute("ALTER TABLE logs ADD COLUMN details TEXT")
     conn.commit()
 
+    # Project tracking toolkit tables live in the same DB file but own their
+    # connection (see project_store.py). Ensure they exist at startup too.
+    import project_store
+    project_store.init_projects_db()
+
 
 # ---- Write operations ----
 

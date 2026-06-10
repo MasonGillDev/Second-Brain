@@ -292,6 +292,16 @@ MCP_SERVERS = {
             "TOOLGATE_CREDENTIALS": _os.environ.get("TOOLGATE_CREDENTIALS", "{}"),
         },
     },
+    "projects": {
+        "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
+        "args": [_os.path.join(APP_DIR, "mcp_servers", "projects_server.py")],
+        "env": {
+            "CLAUDE_HUB_URL": _os.environ.get("CLAUDE_HUB_URL", "http://localhost:3000"),
+            "TOOLGATE_API_KEY": _os.environ.get("TOOLGATE_API_KEY") or _get_secret("toolgate-api-key"),
+            "TOOLGATE_BASE_URL": _os.environ.get("TOOLGATE_BASE_URL", "http://localhost:5050"),
+            "TOOLGATE_AGENT_ID": _os.environ.get("TOOLGATE_AGENT_ID") or _get_secret("toolgate-agent-id"),
+        },
+    },
 }
 
 # Allowlist of tools per server. Only these tools get exposed to the model.
@@ -323,6 +333,7 @@ SKILL_MANIFEST = {
     "music": "Control Apple Music — play songs/artists/playlists, pause, skip, search library, get now playing, set volume.",
     "lights": "Control smart lights (Hue + Cync) — turn on/off, set brightness, change colors, activate scenes, control rooms. Light IDs are prefixed (hue:X, cync:X).",
     "dashboards": "Create, update, list, delete, and restore mini-dashboards. Uses Claude Code to build interactive web apps served at /d/<slug>/.",
+    "projects": "Track projects, tasks, and notes (the source of truth) and read project docs. get_project_context bundles everything about a project — record, tasks, notes, docs, GitHub issues/PRs/commits, and recent Claude Code sessions — in one call. Can also push a task to GitHub as an issue.",
 }
 
 # These servers' tools are ALWAYS sent without needing activation.

@@ -62,6 +62,10 @@ class VectorStore:
                 name="code_context",
                 metadata={"description": "Code comments, docstrings, and signatures"},
             ),
+            "project_knowledge": self._client.get_or_create_collection(
+                name="project_knowledge",
+                metadata={"description": "Per-project docs, tasks, notes, and commits for semantic search"},
+            ),
         }
 
     def add(self, collection_name: str, text: str, metadata: dict | None = None, doc_id: str | None = None):

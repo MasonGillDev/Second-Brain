@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Second Brain — Mission Control</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=2">
+    <link rel="stylesheet" href="/static/css/style.css?v=3">
     <script>
         var saved = localStorage.getItem('sb-theme');
         var theme = saved ? saved : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -55,6 +55,10 @@
             <button class="nav-btn" data-tab="dashboards" title="Dashboards">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
                 <span>Apps</span>
+            </button>
+            <button class="nav-btn" data-tab="projects" title="Projects">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                <span>Projects</span>
             </button>
         </div>
         <div class="sidebar-footer">
@@ -334,6 +338,82 @@
             </div>
         </section>
 
+        <!-- Projects -->
+        <section class="tab-panel" id="tab-projects">
+            <div class="panel-header">
+                <h2 id="projects-title">Projects</h2>
+                <div class="header-actions">
+                    <button id="projects-back" class="btn-secondary" style="display:none">&larr; All Projects</button>
+                    <button id="project-new-btn" class="btn-primary">+ New Project</button>
+                </div>
+            </div>
+
+            <div id="projects-list-view">
+                <div class="dashboards-grid" id="projects-grid"></div>
+            </div>
+
+            <div id="project-detail-view" style="display:none"></div>
+
+            <!-- New Project modal -->
+            <div class="modal-overlay" id="project-modal" style="display:none">
+                <div class="modal">
+                    <h3>New Project</h3>
+                    <input type="text" id="pm-name" class="input-field" placeholder="Project name *">
+                    <input type="text" id="pm-repo" class="input-field" placeholder="GitHub repo (owner/repo or repo)">
+                    <input type="text" id="pm-machine" class="input-field" placeholder="Dev machine (blank = this computer)">
+                    <input type="text" id="pm-path" class="input-field" placeholder="Project path (/Users/...)">
+                    <input type="text" id="pm-docs" class="input-field" placeholder="Docs path (/Users/...)">
+                    <input type="text" id="pm-similar" class="input-field" placeholder="Similar projects (comma-separated)">
+                    <div class="modal-actions">
+                        <button id="pm-cancel" class="btn-secondary">Cancel</button>
+                        <button id="pm-save" class="btn-primary">Create</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- New Task modal -->
+            <div class="modal-overlay" id="task-proj-modal" style="display:none">
+                <div class="modal">
+                    <h3>New Task</h3>
+                    <input type="text" id="tm-name" class="input-field" placeholder="Task name *">
+                    <textarea id="tm-desc" class="input-field" rows="3" placeholder="Description"></textarea>
+                    <select id="tm-priority" class="input-field">
+                        <option value="low">low</option>
+                        <option value="med" selected>med</option>
+                        <option value="high">high</option>
+                    </select>
+                    <div class="modal-actions">
+                        <button id="tm-cancel" class="btn-secondary">Cancel</button>
+                        <button id="tm-save" class="btn-primary">Add Task</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- New Note modal -->
+            <div class="modal-overlay" id="note-proj-modal" style="display:none">
+                <div class="modal">
+                    <h3>New Note</h3>
+                    <input type="text" id="nm-name" class="input-field" placeholder="Note title">
+                    <textarea id="nm-desc" class="input-field" rows="4" placeholder="Note..."></textarea>
+                    <div class="modal-actions">
+                        <button id="nm-cancel" class="btn-secondary">Cancel</button>
+                        <button id="nm-save" class="btn-primary">Add Note</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Doc / Context viewer modal -->
+            <div class="modal-overlay" id="proj-viewer-modal" style="display:none">
+                <div class="modal modal-wide">
+                    <h3 id="viewer-title">Document</h3>
+                    <pre class="proj-viewer" id="viewer-body"></pre>
+                    <div class="modal-actions">
+                        <button id="viewer-close" class="btn-secondary">Close</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Logs -->
         <section class="tab-panel" id="tab-logs">
             <div class="panel-header">
@@ -378,6 +458,7 @@
     <script src="/static/js/config.js"></script>
     <script src="/static/js/costs.js"></script>
     <script src="/static/js/dashboards.js"></script>
+    <script src="/static/js/projects.js"></script>
     <script src="/static/js/logs.js"></script>
     <script>
         // Theme toggle
