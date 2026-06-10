@@ -8,7 +8,8 @@
     const backBtn = document.getElementById('projects-back');
     const titleEl = document.getElementById('projects-title');
 
-    let current = null;  // currently open project object
+    let current = null;    // currently open project object
+    let editingId = null;  // non-null when the project modal is in edit mode
 
     function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
@@ -140,6 +141,7 @@
                     '<label class="proj-autosync"><input type="checkbox" id="proj-autosync"' +
                         (p.auto_sync ? ' checked' : '') + '> Auto-sync</label>' +
                     '<div class="proj-meta-actions">' +
+                        '<button class="btn-secondary btn-sm" id="proj-edit">Edit</button>' +
                         '<button class="btn-secondary btn-sm" id="proj-pull">Pull now</button>' +
                         '<button class="btn-danger btn-sm" id="proj-delete">Delete project</button>' +
                     '</div>' +
@@ -192,6 +194,7 @@
         document.getElementById('proj-add-task').onclick = () => openModal('task-proj-modal');
         document.getElementById('proj-add-note').onclick = () => openModal('note-proj-modal');
         document.getElementById('proj-gather').onclick = gatherContext;
+        document.getElementById('proj-edit').onclick = openEditProject;
         document.getElementById('proj-delete').onclick = deleteProject;
         document.getElementById('proj-pull').onclick = pullNow;
         document.getElementById('proj-autosync').onchange = (e) =>
@@ -336,26 +339,45 @@
     function openModal(id) { document.getElementById(id).style.display = 'flex'; }
     function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 
-    // New project
+    const PM_FIELDS = { 'pm-name': 'name', 'pm-repo': 'github_repo', 'pm-machine': 'dev_machine',
+        'pm-path': 'path', 'pm-docs': 'docs_path', 'pm-similar': 'similar_projects' };
+
+    // New project (create mode)
     document.getElementById('project-new-btn').onclick = () => {
-        ['pm-name', 'pm-repo', 'pm-machine', 'pm-path', 'pm-docs', 'pm-similar'].forEach(i => document.getElementById(i).value = '');
+        editingId = null;
+        Object.keys(PM_FIELDS).forEach(i => document.getElementById(i).value = '');
+        document.getElementById('pm-title').textContent = 'New Project';
+        document.getElementById('pm-save').textContent = 'Create';
         openModal('project-modal');
     };
-    document.getElementById('pm-cancel').onclick = () => closeModal('project-modal');
+
+    // Edit project (edit mode) — prefills from the open project
+    function openEditProject() {
+        editingId = current.id;
+        document.getElementById('pm-name').value = current.name || '';
+        document.getElementById('pm-repo').value = current.github_repo || '';
+        document.getElementById('pm-machine').value = current.dev_machine || '';
+        document.getElementById('pm-path').value = current.path || '';
+        document.getElementById('pm-docs').value = current.docs_path || '';
+        document.getElementById('pm-similar').value = current.similar_projects || '';
+        document.getElementById('pm-title').textContent = 'Edit Project';
+        document.getElementById('pm-save').textContent = 'Save';
+        openModal('project-modal');
+    }
+
+    document.getElementById('pm-cancel').onclick = () => { editingId = null; closeModal('project-modal'); };
     document.getElementById('pm-save').onclick = async () => {
-        const payload = {
-            name: document.getElementById('pm-name').value.trim(),
-            github_repo: document.getElementById('pm-repo').value.trim(),
-            dev_machine: document.getElementById('pm-machine').value.trim(),
-            path: document.getElementById('pm-path').value.trim(),
-            docs_path: document.getElementById('pm-docs').value.trim(),
-            similar_projects: document.getElementById('pm-similar').value.trim(),
-        };
+        const payload = {};
+        Object.entries(PM_FIELDS).forEach(([id, key]) => { payload[key] = document.getElementById(id).value.trim(); });
         if (!payload.name) { alert('Project name is required.'); return; }
-        const r = await api('/api/projects', { method: 'POST', body: JSON.stringify(payload) });
+        const r = editingId
+            ? await api('/api/projects/' + editingId, { method: 'PUT', body: JSON.stringify(payload) })
+            : await api('/api/projects', { method: 'POST', body: JSON.stringify(payload) });
         if (r && r.error) { alert(r.error); return; }
         closeModal('project-modal');
-        loadList();
+        const wasEditing = editingId;
+        editingId = null;
+        if (wasEditing) openDetail(wasEditing); else loadList();
     };
 
     // New task

@@ -20,6 +20,7 @@ Two REST clients live here (thin, sync httpx), modeled on
 """
 
 import os
+import re
 import json
 
 import httpx
@@ -167,13 +168,18 @@ class ClaudeHubClient:
 
     @staticmethod
     def project_id_for_path(path: str) -> str:
-        """The Hub keys projects by their directory path with '/' -> '-'."""
-        return path.rstrip("/").replace("/", "-")
+        """The Hub (mirroring Claude Code's ~/.claude/projects naming) keys a
+        project by its working directory with EVERY non-alphanumeric character
+        replaced by '-' — so '_' and '.' become '-', not just '/'. E.g.
+        '/Users/me/Caravan/caravan_api' -> '-Users-me-Caravan-caravan-api'."""
+        return re.sub(r"[^A-Za-z0-9]", "-", path.rstrip("/"))
 
     def recent_sessions(self, project_path: str, limit: int = MAX_SESSIONS) -> list[dict]:
         pid = self.project_id_for_path(project_path)
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(f"{self.base_url}/api/projects/{pid}/sessions")
+            if resp.status_code == 404:
+                return []  # Hub is reachable but has no sessions recorded for this dir
             resp.raise_for_status()
             sessions = resp.json().get("sessions", [])
         return sessions[:limit]

@@ -178,11 +178,14 @@ def update_project(project, **fields) -> dict | None:
     if sets:
         cols = ", ".join(f"{k} = ?" for k in sets)
         with _lock:
-            conn.execute(
-                f"UPDATE projects SET {cols}, updated_at = ? WHERE id = ?",
-                [*sets.values(), time.time(), pid],
-            )
-            conn.commit()
+            try:
+                conn.execute(
+                    f"UPDATE projects SET {cols}, updated_at = ? WHERE id = ?",
+                    [*sets.values(), time.time(), pid],
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                raise ValueError(f"A project named '{sets.get('name')}' already exists.")
     return get_project(pid)
 
 

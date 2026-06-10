@@ -61,7 +61,12 @@ async def get_project(pid):
 @require_auth
 async def update_project(pid):
     data = await request.get_json() or {}
-    p = store.update_project(pid, **{k: data[k] for k in data if k in store._PROJECT_FIELDS})
+    if "name" in data and not (data.get("name") or "").strip():
+        return jsonify({"error": "name cannot be empty"}), 400
+    try:
+        p = store.update_project(pid, **{k: data[k] for k in data if k in store._PROJECT_FIELDS})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     if p is None:
         return jsonify({"error": "not found"}), 404
     return jsonify(p)
