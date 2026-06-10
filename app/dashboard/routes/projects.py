@@ -14,6 +14,7 @@ from dashboard.auth import require_auth
 import project_store as store
 import project_context as pctx
 import project_index as pidx
+import git_sync as gitsync
 
 projects_bp = Blueprint("projects", __name__)
 
@@ -240,3 +241,25 @@ async def reindex_project(pid):
     except Exception as e:
         return jsonify({"error": f"reindex failed: {e}"}), 503
     return jsonify({"counts": counts})
+
+
+# ---- Git sync ----
+
+@projects_bp.route("/api/projects/<int:pid>/pull", methods=["POST"])
+@require_auth
+async def pull_project(pid):
+    rec = store.get_project(pid)
+    if rec is None:
+        return jsonify({"error": "not found"}), 404
+    result = await asyncio.to_thread(gitsync.sync_project, rec, current_app.vector_store)
+    return jsonify({"result": result, "project": store.get_project(pid)})
+
+
+@projects_bp.route("/api/projects/<int:pid>/auto-sync", methods=["POST"])
+@require_auth
+async def toggle_auto_sync(pid):
+    data = await request.get_json() or {}
+    p = store.set_auto_sync(pid, bool(data.get("on", True)))
+    if p is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(p)

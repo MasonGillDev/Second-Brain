@@ -1709,6 +1709,8 @@ select.input-field {
 .proj-meta-row { display: flex; flex-direction: column; gap: 2px; }
 .proj-meta-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-tertiary); }
 .proj-meta-val { font-size: 13px; color: var(--text-secondary); word-break: break-all; font-family: var(--font-mono); }
+.proj-autosync { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+.proj-meta-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 
 .proj-context-pane { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 

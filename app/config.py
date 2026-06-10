@@ -379,6 +379,15 @@ RETRIEVAL_TOP_K_REFERENCE = 3
 RETRIEVAL_MIN_RELEVANCE_REFERENCE = 0.39
 
 # =============================================================================
+# GIT SYNC
+# =============================================================================
+# Polling service (launchd) that fetches + fast-forwards tracked projects' clones.
+GIT_SYNC_ENABLED = True
+GIT_SYNC_INTERVAL_SECONDS = 600      # informational; the launchd StartInterval owns the schedule
+GIT_SYNC_FETCH_TIMEOUT = 120         # seconds per git fetch/merge
+GIT_SYNC_REINDEX_ON_CHANGE = True    # reindex a project's search index after a successful pull
+
+# =============================================================================
 # RUNTIME OVERRIDES
 # =============================================================================
 # Load overrides from JSON file (set by dashboard config editor)

@@ -12,6 +12,18 @@
 
     function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
 
+    function relTime(ts) {
+        if (!ts) return 'never';
+        const s = Date.now() / 1000 - ts;
+        if (s < 60) return 'just now';
+        if (s < 3600) return Math.floor(s / 60) + 'm ago';
+        if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+        return Math.floor(s / 86400) + 'd ago';
+    }
+    function syncText(p) {
+        return p.sync_status ? p.sync_status + ' · ' + relTime(p.last_synced_at) : 'never synced';
+    }
+
     // ---------------------------------------------------------------- list view
 
     async function loadList() {
@@ -41,6 +53,7 @@
             '<div class="proj-card-stats">' +
                 '<span>' + p.open_task_count + '/' + p.task_count + ' open tasks</span>' +
                 '<span>' + p.note_count + ' notes</span>' +
+                '<span>' + (p.sync_status ? 'sync: ' + esc(p.sync_status) : 'unsynced') + '</span>' +
             '</div>';
         el.onclick = () => openDetail(p.id);
         return el;
@@ -122,7 +135,14 @@
                     metaRow('Path', p.path) +
                     metaRow('Docs', p.docs_path) +
                     metaRow('Similar', p.similar_projects) +
-                    '<button class="btn-danger btn-sm" id="proj-delete" style="margin-top:.5rem">Delete project</button>' +
+                    '<div class="proj-meta-row"><span class="proj-meta-label">Git sync</span>' +
+                        '<span class="proj-meta-val" id="proj-sync-state">' + esc(syncText(p)) + '</span></div>' +
+                    '<label class="proj-autosync"><input type="checkbox" id="proj-autosync"' +
+                        (p.auto_sync ? ' checked' : '') + '> Auto-sync</label>' +
+                    '<div class="proj-meta-actions">' +
+                        '<button class="btn-secondary btn-sm" id="proj-pull">Pull now</button>' +
+                        '<button class="btn-danger btn-sm" id="proj-delete">Delete project</button>' +
+                    '</div>' +
                 '</div>' +
                 '<div class="proj-context-pane">' +
                     '<div class="proj-section-head"><h3>Context</h3>' +
@@ -173,6 +193,9 @@
         document.getElementById('proj-add-note').onclick = () => openModal('note-proj-modal');
         document.getElementById('proj-gather').onclick = gatherContext;
         document.getElementById('proj-delete').onclick = deleteProject;
+        document.getElementById('proj-pull').onclick = pullNow;
+        document.getElementById('proj-autosync').onchange = (e) =>
+            api('/api/projects/' + current.id + '/auto-sync', { method: 'POST', body: JSON.stringify({ on: e.target.checked }) });
         document.getElementById('proj-reindex').onclick = reindex;
         document.getElementById('proj-search-btn').onclick = runSearch;
         document.getElementById('proj-search-input').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
@@ -244,6 +267,21 @@
     function deleteProject() {
         if (!confirm('Delete project “' + current.name + '” and all its tasks/notes?')) return;
         api('/api/projects/' + current.id, { method: 'DELETE' }).then(loadList);
+    }
+
+    async function pullNow() {
+        const btn = document.getElementById('proj-pull');
+        const label = btn.textContent;
+        btn.disabled = true; btn.textContent = 'Pulling…';
+        const r = await api('/api/projects/' + current.id + '/pull', { method: 'POST' });
+        btn.disabled = false; btn.textContent = label;
+        if (r && r.project) {
+            current = r.project;
+            const el = document.getElementById('proj-sync-state');
+            if (el) el.textContent = syncText(r.project);
+        } else if (r && r.error) {
+            alert(r.error);
+        }
     }
 
     // --------------------------------------------------------------- knowledge search

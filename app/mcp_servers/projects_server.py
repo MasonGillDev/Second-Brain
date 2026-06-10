@@ -13,6 +13,7 @@ server is a thin, well-described wrapper that returns readable text.
 
 import sys
 import os
+import time
 import socket
 
 # Add project root (app/) to path so we can import the shared modules.
@@ -23,8 +24,23 @@ from mcp.server.fastmcp import FastMCP
 import project_store as store
 import project_context as pctx
 import project_index as pidx
+import git_sync as gitsync
 
 mcp = FastMCP("projects")
+
+
+def _rel(ts) -> str:
+    """Compact 'how long ago' for an epoch timestamp."""
+    if not ts:
+        return "never"
+    secs = time.time() - ts
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs / 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs / 3600)}h ago"
+    return f"{int(secs / 86400)}d ago"
 
 
 def _fmt_project_line(p: dict) -> str:
@@ -36,6 +52,8 @@ def _fmt_project_line(p: dict) -> str:
     bits.append(f"{p.get('open_task_count', 0)}/{p.get('task_count', 0)} open tasks")
     if p.get("note_count"):
         bits.append(f"{p['note_count']} notes")
+    if p.get("sync_status"):
+        bits.append(f"sync: {p['sync_status']} ({_rel(p.get('last_synced_at'))})")
     meta = "  ·  ".join(bits)
     return f"- [{p['id']}] {p['name']}\n    {meta}"
 
@@ -116,6 +134,10 @@ def get_project(project: str) -> str:
         f"  tasks: {p.get('open_task_count', 0)} open / {p.get('task_count', 0)} total"
         f"  ·  notes: {p.get('note_count', 0)}",
     ]
+    sync_status = p.get("sync_status")
+    if sync_status:
+        msg = f" — {p['sync_message']}" if p.get("sync_message") else ""
+        lines.append(f"  git sync: {sync_status} ({_rel(p.get('last_synced_at'))}){msg}")
     return "\n".join(lines)
 
 
@@ -384,6 +406,24 @@ def reindex_project(project: str) -> str:
         return f"Reindex failed: {e}"
     return (f"Indexed '{project}': {c['docs']} doc chunks, {c['tasks']} tasks, "
             f"{c['notes']} notes, {c['commits']} commits (new/changed).")
+
+
+@mcp.tool()
+def sync_project(project: str) -> str:
+    """
+    Fetch and fast-forward a project's local git clone right now. Only clean repos
+    that are cleanly behind are pulled; a repo with uncommitted changes or diverged
+    history is skipped and flagged (it is never modified). A background service also
+    does this on a schedule — use this to pull on demand.
+
+    Args:
+        project: Project name or id.
+    """
+    r = gitsync.sync_one(project)
+    if r["status"] == "not_found":
+        return _not_found(project)
+    msg = f" — {r['message']}" if r.get("message") else ""
+    return f"{r['name']}: {r['status']}{msg}"
 
 
 @mcp.tool()

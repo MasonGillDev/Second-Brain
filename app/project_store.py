@@ -49,6 +49,11 @@ def init_projects_db(conn: sqlite3.Connection | None = None):
             path             TEXT    NOT NULL DEFAULT '',
             similar_projects TEXT    NOT NULL DEFAULT '',
             docs_path        TEXT    NOT NULL DEFAULT '',
+            auto_sync        INTEGER NOT NULL DEFAULT 1,
+            sync_status      TEXT    NOT NULL DEFAULT '',
+            sync_message     TEXT    NOT NULL DEFAULT '',
+            last_synced_at   REAL,
+            last_commit      TEXT    NOT NULL DEFAULT '',
             created_at       REAL    NOT NULL,
             updated_at       REAL    NOT NULL
         );
@@ -77,6 +82,17 @@ def init_projects_db(conn: sqlite3.Connection | None = None):
         CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id);
         CREATE INDEX IF NOT EXISTS idx_project_notes_project ON project_notes(project_id);
     """)
+    # Migration: git-sync columns added later (mirror db.py's add-column pattern).
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+    for col, ddl in (
+        ("auto_sync", "INTEGER NOT NULL DEFAULT 1"),
+        ("sync_status", "TEXT NOT NULL DEFAULT ''"),
+        ("sync_message", "TEXT NOT NULL DEFAULT ''"),
+        ("last_synced_at", "REAL"),
+        ("last_commit", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE projects ADD COLUMN {col} {ddl}")
     conn.commit()
 
 
@@ -180,6 +196,35 @@ def delete_project(project) -> bool:
         conn.execute("DELETE FROM projects WHERE id = ?", (pid,))
         conn.commit()
     return True
+
+
+def set_sync_state(project, status: str, message: str = "", head: str = "") -> dict | None:
+    """Record the outcome of a git-sync pass. Stamps last_synced_at; keeps the
+    previous last_commit when head is blank."""
+    conn = _get_conn()
+    pid = _resolve_project_id(conn, project)
+    if pid is None:
+        return None
+    with _lock:
+        conn.execute(
+            "UPDATE projects SET sync_status = ?, sync_message = ?, last_synced_at = ?, "
+            "last_commit = COALESCE(NULLIF(?, ''), last_commit) WHERE id = ?",
+            (status, message, time.time(), head, pid),
+        )
+        conn.commit()
+    return get_project(pid)
+
+
+def set_auto_sync(project, on: bool) -> dict | None:
+    """Toggle whether the git-sync service auto-pulls this project."""
+    conn = _get_conn()
+    pid = _resolve_project_id(conn, project)
+    if pid is None:
+        return None
+    with _lock:
+        conn.execute("UPDATE projects SET auto_sync = ? WHERE id = ?", (1 if on else 0, pid))
+        conn.commit()
+    return get_project(pid)
 
 
 # ---- Tasks ----
