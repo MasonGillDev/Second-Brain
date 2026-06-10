@@ -13,12 +13,18 @@ Usage:
 import json
 import asyncio
 import sys, os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 TASKS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "data", "scheduled_tasks.json")
+
+# How late a missed run may still be executed when the daemon catches up
+# (e.g. the laptop was asleep at the scheduled minute and woke later). Beyond
+# this window a missed run is acknowledged but skipped, so we don't fire a
+# stale "morning" routine in the afternoon. Override via config if desired.
+CATCHUP_GRACE = timedelta(hours=getattr(config, "SCHEDULER_CATCHUP_HOURS", 3))
 
 
 def load_tasks() -> list[dict]:
@@ -71,6 +77,22 @@ def cron_matches(schedule: str, now: datetime) -> bool:
             return False
 
     return True
+
+
+def previous_fire(schedule: str, now: datetime, lookback_minutes: int = 8 * 24 * 60) -> datetime | None:
+    """Most recent minute at-or-before `now` that matches the cron schedule.
+
+    Used for catch-up: instead of only firing when the daemon happens to be
+    ticking during the exact matching minute (which is missed whenever the
+    machine is asleep or the daemon restarts), we find the last scheduled
+    occurrence and compare it against the task's last_run.
+    """
+    candidate = now.replace(second=0, microsecond=0)
+    for _ in range(lookback_minutes + 1):
+        if cron_matches(schedule, candidate):
+            return candidate
+        candidate -= timedelta(minutes=1)
+    return None
 
 
 def _field_matches(field: str, value: int, min_val: int, max_val: int) -> bool:
@@ -191,10 +213,25 @@ async def send_to_bot(prompt: str, task_name: str):
 
 
 async def run_task(task: dict):
-    """Execute a scheduled task."""
+    """Execute a scheduled task.
+
+    The agent run is isolated inside its own asyncio.Task. Tearing down the
+    MCP servers (anyio/stdio_client) leaks a CancelledError onto whatever task
+    is running its cleanup; running it in a child task means that stray cancel
+    lands on the (already-finishing) child instead of the daemon's main loop.
+    Without this, the daemon dies on the next `await` after every task.
+    """
     print(f"  [scheduler] Running task: {task['name']}")
     print(f"  [scheduler] Prompt: {task['prompt'][:80]}")
-    await send_to_bot(task["prompt"], task["name"])
+    try:
+        await asyncio.create_task(send_to_bot(task["prompt"], task["name"]))
+    except asyncio.CancelledError:
+        # Spurious cancellation leaked from MCP teardown — the task itself
+        # already ran. Swallow it so the daemon keeps running. (A real
+        # shutdown arrives as KeyboardInterrupt at the main loop, not here.)
+        print(f"  [scheduler] Absorbed stray cancellation after task '{task['name']}'")
+    except Exception as e:
+        print(f"  [scheduler] Task '{task['name']}' raised {type(e).__name__}: {e} — daemon continuing")
 
 
 async def main():
@@ -214,26 +251,47 @@ async def main():
                 if not task.get("enabled", True):
                     continue
 
-                if not cron_matches(task["schedule"], now):
+                # Find the most recent scheduled occurrence at-or-before now.
+                fire = previous_fire(task["schedule"], now)
+                if fire is None:
                     continue
 
-                # Prevent running the same task twice in the same minute
+                # Skip if we've already run this occurrence (or a later one).
                 last_run = task.get("last_run")
                 if last_run:
                     last_run_dt = datetime.fromisoformat(last_run).replace(second=0, microsecond=0)
-                    if last_run_dt == now:
+                    if last_run_dt >= fire:
                         continue
 
-                # Run the task
-                await run_task(task)
+                # Catch-up grace: if the missed occurrence is too old (machine
+                # was off all day, etc.), acknowledge it but don't run a stale
+                # routine. Marking last_run stops us re-checking every tick.
+                if now - fire > CATCHUP_GRACE:
+                    task["last_run"] = fire.isoformat()
+                    save_tasks(tasks)
+                    print(f"  [scheduler] Skipped stale run of '{task['name']}' "
+                          f"(due {fire:%Y-%m-%d %H:%M}, beyond {CATCHUP_GRACE} grace)")
+                    continue
 
-                # Auto-delete one-time schedules, otherwise update last_run
-                if is_one_time_schedule(task["schedule"]):
-                    tasks = [t for t in tasks if t["id"] != task["id"]]
-                    print(f"  [scheduler] Auto-deleted one-time task: {task['name']}")
-                else:
-                    task["last_run"] = now.isoformat()
-                save_tasks(tasks)
+                # Run the task. Guard the whole block so no task failure can
+                # ever take down the daemon — it must survive to the next tick.
+                try:
+                    late = now - fire
+                    if late > timedelta(minutes=1):
+                        print(f"  [scheduler] Catch-up: '{task['name']}' was due {fire:%H:%M}, "
+                              f"running {int(late.total_seconds() // 60)} min late")
+                    await run_task(task)
+
+                    # Auto-delete one-time schedules, otherwise record the
+                    # occurrence we just satisfied.
+                    if is_one_time_schedule(task["schedule"]):
+                        tasks = [t for t in tasks if t["id"] != task["id"]]
+                        print(f"  [scheduler] Auto-deleted one-time task: {task['name']}")
+                    else:
+                        task["last_run"] = fire.isoformat()
+                    save_tasks(tasks)
+                except (Exception, asyncio.CancelledError) as e:
+                    print(f"  [scheduler] Error handling task '{task.get('name')}': {type(e).__name__}: {e}")
 
             await asyncio.sleep(60)
 

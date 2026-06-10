@@ -12,10 +12,27 @@ import time
 import chromadb
 import config
 
+CHROMA_HOST = "127.0.0.1"
+CHROMA_PORT = 8000
+
+
+def _connect_with_retry(host: str, port: int, attempts: int = 30, delay: float = 1.0):
+    """Connect to the chromadb HTTP server, retrying so launchd start-order doesn't matter."""
+    last_err = None
+    for _ in range(attempts):
+        try:
+            client = chromadb.HttpClient(host=host, port=port)
+            client.heartbeat()
+            return client
+        except Exception as e:
+            last_err = e
+            time.sleep(delay)
+    raise RuntimeError(f"Could not reach chromadb at {host}:{port} after {attempts} attempts: {last_err}")
+
 
 class VectorStore:
     def __init__(self):
-        self._client = chromadb.PersistentClient(path=config.CHROMA_PERSIST_DIR)
+        self._client = _connect_with_retry(CHROMA_HOST, CHROMA_PORT)
         self.collections = {
             "long_term": self._client.get_or_create_collection(
                 name="long_term",

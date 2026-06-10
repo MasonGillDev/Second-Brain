@@ -303,6 +303,7 @@ class CyncBackend(LightBackend):
         try:
             import aiohttp
             from pycync import Auth, Cync
+            from pycync.user import User
 
             email = get_secret("cync-email")
             password = get_secret("cync-password")
@@ -314,16 +315,17 @@ class CyncBackend(LightBackend):
             # Try to restore cached tokens
             if CYNC_TOKEN_FILE.exists():
                 tokens = json.loads(CYNC_TOKEN_FILE.read_text())
-                auth._user = type("User", (), {
-                    "access_token": tokens["access_token"],
-                    "refresh_token": tokens["refresh_token"],
-                    "expires_at": tokens["expires_at"],
-                    "user_id": tokens.get("user_id", ""),
-                    "authorize": tokens.get("authorize", ""),
-                })()
-                # Refresh if close to expiry
+                # Build a real User so token refresh (set_new_access_token) works.
+                auth._user = User(
+                    tokens["access_token"],
+                    tokens["refresh_token"],
+                    tokens.get("authorize", ""),
+                    tokens.get("user_id", 0),
+                    expires_at=tokens["expires_at"],
+                )
+                # Refresh if close to / past expiry
                 if auth._user.expires_at - time.time() < 3600:
-                    await auth.refresh_credentials()
+                    await auth.async_refresh_user_token()
             else:
                 # First-time login needs 2FA — run cync_setup.py first
                 raise RuntimeError(
@@ -338,6 +340,8 @@ class CyncBackend(LightBackend):
         except Exception as e:
             print(f"[CyncBackend] Connection failed: {e}", file=sys.stderr)
             self._connected = False
+            # Surface the failure instead of silently returning zero lights.
+            raise RuntimeError(f"Cync connection failed: {e}") from e
 
     def _cache_tokens(self, auth):
         """Save auth tokens for next startup."""
