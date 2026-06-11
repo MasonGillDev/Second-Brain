@@ -32,6 +32,11 @@ _INGESTIBLE_DOC_EXT = {".md", ".markdown", ".txt", ".rst", ".docx"}
 # passages, unlike the strict long-term-memory floor.
 SEARCH_MIN_RELEVANCE = 0.30
 
+# Max chars of a hit's text returned as the snippet. Commits get plenty of room
+# so their full message body comes back; doc/task/note chunks get a generous cap.
+SNIPPET_CHARS = 800
+COMMIT_SNIPPET_CHARS = 4000
+
 _vs = None
 
 
@@ -260,12 +265,13 @@ def search_project(project, query: str, source_type: str | None = None,
     out = []
     for r in results:
         m = r.get("metadata") or {}
+        cap = COMMIT_SNIPPET_CHARS if m.get("source_type") == "commit" else SNIPPET_CHARS
         out.append({
             "source_type": m.get("source_type", "?"),
             "ref": m.get("ref", ""),
             "title": m.get("title", ""),
             "relevance": r.get("relevance", 0),
-            "snippet": (r.get("text") or "").strip()[:300],
+            "snippet": (r.get("text") or "").strip()[:cap],
         })
     return out
 
