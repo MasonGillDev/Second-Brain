@@ -1,0 +1,9 @@
+{
+  "server_url": "http://100.103.102.56:5001",
+  "api_key": "keychain",
+  "watch_paths": [
+    "/Users/masongill/BrainDrop"
+  ],
+  "extensions": [".md", ".docx"],
+  "recursive": true
+}

@@ -1,0 +1,3 @@
+# Local, per-device secrets and state — never commit these.
+config.json
+.watcher_state.json
