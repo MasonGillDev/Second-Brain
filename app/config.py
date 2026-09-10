@@ -430,6 +430,11 @@ MCP_SERVERS = {
         "args": [_os.path.join(APP_DIR, "mcp_servers", "tv_server.py")],
         "env": None,
     },
+    "windows": {
+        "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
+        "args": [_os.path.join(APP_DIR, "mcp_servers", "windows_server.py")],
+        "env": None,
+    },
     "dashboards": {
         "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
         "args": [_os.path.join(APP_DIR, "mcp_servers", "dashboard_builder.py")],
@@ -520,6 +525,7 @@ SKILL_MANIFEST = {
     "music": "Control Apple Music — play songs/artists/playlists, pause, skip, search library, get now playing, set volume.",
     "lights": "Control smart lights (Hue + Cync) — turn on/off, set brightness, change colors, activate scenes, control rooms. Light IDs are prefixed (hue:X, cync:X).",
     "tv": "Control the Samsung TV — power on/off (power-on takes ~5-20s via Wake-on-LAN), launch apps (Netflix, YouTube...), send remote key presses, switch inputs, set volume, open a URL in the TV browser. Launching an app/URL/input auto-wakes the TV if it's off — no need to power on first.",
+    "windows": "Open Mac apps and arrange their windows across displays — launch an app onto a specific screen in a specific spot (halves, quarters, thirds, full, or exact fractions), move windows that are already open, list connected displays, and see the current window layout.",
     "dashboards": "Create, update, list, delete, and restore mini-dashboards. Uses Claude Code to build interactive web apps served at /d/<slug>/.",
     "workflows": "Author, inspect, and run named workflows — reusable multi-step routines built from tool calls, isolated LLM steps, and other workflows. create_workflow takes a JSON definition (name, description, params, steps, output); run_workflow runs one and returns only its final output. Each step's LLM calls run in their own context, so nothing pollutes this conversation.",
     "triggers": "Create and manage event triggers — automations that fire when something happens rather than on a schedule. Webhooks (iOS Shortcuts on the user's iPhone, other devices/services POSTing over Tailscale) and pollers (watch a URL or tool output for changes). Each trigger runs a workflow or an agent prompt and delivers the result to voice/telegram. create_trigger mints the webhook URL + secret; get_trigger_firings shows what fired and why.",
