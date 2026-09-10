@@ -17,6 +17,7 @@ from keychain import get_secret
 from mcp.server.fastmcp import FastMCP
 from memory.vector_store import VectorStore
 from memory.maintenance import MemoryMaintenance
+from memory.ingestion import SUPPORTED_EXTENSIONS, _read_docx
 
 mcp = FastMCP("memory")
 
@@ -75,6 +76,121 @@ def search_memory(query: str, top_k: int = 5) -> str:
 
 
 @mcp.tool()
+def search_documents(query: str, top_k: int = 4) -> str:
+    """
+    Search ingested reference documents (files dropped into the docs folder from
+    any device) for relevant passages. Use this when the user asks about the
+    content of a document, notes, a PDF/markdown they saved, or reference
+    material — anything that lives in a file rather than in conversational memory.
+
+    This searches the 'documents' collection specifically. For facts about the
+    user or past conversations, use search_memory instead.
+
+    Args:
+        query: What to look for (e.g. "the deployment checklist", "notes on the
+               tax filing", "what does the spec say about auth").
+        top_k: Maximum number of passages to return (default 4).
+    """
+    # Use the same vetted relevance floor as passive document RAG so the tool
+    # only surfaces genuinely on-topic passages, not loose semantic neighbours.
+    results = _vector_store.query(
+        "documents", query, top_k=top_k,
+        min_relevance=config.RETRIEVAL_MIN_RELEVANCE_DOCUMENTS,
+    )
+
+    if not results:
+        return "No matching passages found in ingested documents."
+
+    lines = []
+    for hit in results:
+        meta = hit.get("metadata") or {}
+        source = meta.get("source_file", "unknown")
+        heading = meta.get("heading", "")
+        loc = f"{source} — {heading}" if heading else source
+        lines.append(f"[{loc}] (relevance {hit['relevance']})\n{hit['text']}")
+
+    return "\n\n---\n\n".join(lines)
+
+
+@mcp.tool()
+def list_documents() -> str:
+    """List the reference documents currently ingested and searchable, with the
+    number of chunks each was split into. Use when the user asks what documents
+    or files you have access to."""
+    chunks = _vector_store.get_all("documents", limit=1000)
+
+    if not chunks:
+        return "No documents ingested yet."
+
+    counts: dict[str, int] = {}
+    for c in chunks:
+        source = (c.get("metadata") or {}).get("source_file", "unknown")
+        counts[source] = counts.get(source, 0) + 1
+
+    lines = [f"Ingested documents ({len(counts)} files, {len(chunks)} chunks):\n"]
+    for source in sorted(counts):
+        lines.append(f"- {source} ({counts[source]} chunks)")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_document(filename: str) -> str:
+    """Return the full text of a single ingested document by filename.
+
+    Use this when you need the WHOLE document, not just the passages that match a
+    query — e.g. to summarize it, quote it exactly, or answer something that spans
+    the whole file. Use search_documents for targeted lookups, list_documents to
+    see available filenames, and this to read one in full.
+
+    Args:
+        filename: The document's filename as shown by list_documents (e.g.
+                  "meeting-notes.md"). Matching is case-insensitive and will
+                  resolve a unique partial name.
+    """
+    docs_dir = config.DOCS_DIR
+    if not os.path.isdir(docs_dir):
+        return "No documents directory exists yet."
+
+    available = [f for f in os.listdir(docs_dir)
+                 if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS]
+
+    # Resolve name: exact, then case-insensitive, then unique substring.
+    name = os.path.basename(filename or "").strip()
+    match = None
+    if name in available:
+        match = name
+    else:
+        lname = name.lower()
+        ci = [f for f in available if f.lower() == lname]
+        subs = [f for f in available if lname and lname in f.lower()]
+        if ci:
+            match = ci[0]
+        elif len(subs) == 1:
+            match = subs[0]
+        elif len(subs) > 1:
+            return (f"Ambiguous — '{filename}' matches several documents: "
+                    f"{', '.join(sorted(subs))}. Be more specific.")
+
+    if not match:
+        listing = ", ".join(sorted(available)) if available else "(none ingested)"
+        return f"No document named '{filename}'. Available: {listing}"
+
+    path = os.path.join(docs_dir, match)
+    ext = os.path.splitext(match)[1].lower()
+    try:
+        if ext == ".docx":
+            content = _read_docx(path)
+        else:
+            with open(path, "r", errors="replace") as f:
+                content = f.read()
+    except OSError as e:
+        return f"Could not read '{match}': {e}"
+
+    return f"# Document: {match}\n\n{content}"
+
+
+@mcp.tool()
 def list_all_memories() -> str:
     """List all stored long-term memories. Use when the user asks what you remember about them."""
     all_memories = _vector_store.get_all("long_term", limit=50)
@@ -112,11 +228,11 @@ def save_procedure(name: str, description: str, steps: str) -> str:
     semantic match against their description, so write the description as a
     TRIGGER CONDITION — what kind of user request should retrieve this recipe.
 
-    Use when:
-    - The user explicitly asks you to save how you did something.
-    - You just completed a non-obvious multi-step workflow likely to recur.
-
-    Do NOT save for single-tool answers or one-off tasks.
+    Normally you reach this as the save step of the create_procedure procedure
+    (get_procedure("create_procedure")) — after discovery, once the user has
+    said the task is complete. Do NOT save for single-tool answers or one-off
+    tasks, and do not skip the create_procedure flow to call this directly
+    unless the user explicitly dictates a procedure to save.
 
     Args:
         name: short_snake_case identifier, under 40 chars.
@@ -160,6 +276,31 @@ def search_procedures(query: str, top_k: int = 5) -> str:
         score = m.get("relevance", 0)
         lines.append(f"[{score:.2f}] {m['text']}")
     return "\n\n".join(lines)
+
+
+@mcp.tool()
+def get_procedure(name: str) -> str:
+    """
+    Fetch ONE procedure by its exact name — full description and steps.
+
+    Use this to follow a nested reference ("Run procedure: <name>"), to fetch
+    create_procedure when no procedure covers the current request, or after
+    list_procedures showed a name that fits the task.
+
+    Args:
+        name: the procedure's snake_case name (as shown by list_procedures).
+    """
+    doc = _vector_store.get("procedural", f"proc_{name}")
+    if not doc:
+        # Agent-saved procedures may have been stored under a generated id —
+        # fall back to a metadata scan by name.
+        for p in _vector_store.get_all("procedural", limit=500):
+            if p["metadata"].get("name") == name:
+                doc = p
+                break
+    if not doc:
+        return f"No procedure named '{name}'. Call list_procedures to see what exists."
+    return doc["text"]
 
 
 @mcp.tool()

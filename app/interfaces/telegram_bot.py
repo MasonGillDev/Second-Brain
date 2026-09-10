@@ -137,7 +137,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application: Application):
     """Called after the bot app is initialized — start the agent."""
     global agent
-    agent = AgentCore()
+    # remote_tools: telegram spawns NO MCP servers of its own — every tool call
+    # proxies to the dashboard's single running set over the toolbus API, so
+    # there's never a second light/music/tv server competing with the
+    # dashboard's (the Cync cloud evicts whichever session connects second).
+    agent = AgentCore(remote_tools=True)
     print("  Starting agent core...")
     await agent.start()
 

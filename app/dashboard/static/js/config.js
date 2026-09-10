@@ -2,6 +2,7 @@
 (function() {
     const form = document.getElementById('config-form');
     let configData = {};
+    let modelPresets = [];
 
     window.addEventListener('tab:config', loadConfig);
     document.getElementById('config-save').addEventListener('click', saveConfig);
@@ -10,6 +11,7 @@
         const data = await api('/api/config');
         if (!data) return;
         configData = data.config;
+        modelPresets = data.model_presets || [];
 
         // Group by prefix
         const groups = {};
@@ -52,6 +54,14 @@
                     let input;
                     if (info.type === 'boolean') {
                         input = `<label class="checkbox-label"><input type="checkbox" data-key="${key}" ${info.value ? 'checked' : ''} ${info.readonly ? 'disabled' : ''}> ${info.value ? 'true' : 'false'}</label>`;
+                    } else if (key === 'MODEL' && modelPresets.length) {
+                        // Curated dropdown of vetted models, but still free-text so
+                        // any OpenRouter id can be typed. Switching here takes effect
+                        // on the next message (no restart); the provider pin follows
+                        // the model automatically (config.MODEL_PROVIDER_PINS).
+                        const opts = modelPresets.map(m => `<option value="${m}">`).join('');
+                        input = `<input type="text" list="model-presets" data-key="${key}" value="${info.value}" ${info.readonly ? 'disabled' : ''}>`
+                              + `<datalist id="model-presets">${opts}</datalist>`;
                     } else {
                         input = `<input type="${info.type === 'number' ? 'number' : 'text'}" data-key="${key}" value="${info.value}" step="any" ${info.readonly ? 'disabled' : ''}>`;
                     }

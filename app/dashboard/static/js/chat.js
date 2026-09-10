@@ -9,7 +9,6 @@
     let processing = false;
     let pendingImages = []; // {data: base64, media_type: string, preview: dataURL}
     const debugToggle = document.getElementById('chat-debug-toggle');
-    const ttsToggle = document.getElementById('chat-tts-toggle');
 
     function addMsg(cls, html) {
         const div = document.createElement('div');
@@ -49,27 +48,33 @@
         statusLabel.textContent = text;
     }
 
+    const chatTitle = document.getElementById('chat-title');
+
     const ws = window.createWS('/ws/chat',
         (data) => {
-            if (data.type === 'tool_call') {
+            if (data.type === 'thread') {
+                // Panel header shows the active thread's name; a brand-new
+                // thread has no title until it's first parked.
+                chatTitle.textContent = data.title || 'New conversation';
+                // history present = we switched threads (resume, /clear,
+                // reconnect): rebuild the feed as that thread's transcript.
+                if (data.history) {
+                    messages.innerHTML = '';
+                    if (data.history.summary) {
+                        addMsg('assistant', '<em>Earlier in this conversation (summary):</em><br>'
+                            + esc(data.history.summary).replace(/\n/g, '<br>'));
+                    }
+                    for (const m of data.history.messages || []) {
+                        if (m.role === 'user') addMsg('user', esc(m.content));
+                        else addMsg('assistant', marked.parse(m.content || ''));
+                    }
+                }
+            } else if (data.type === 'tool_call') {
                 addToolCall(data.name, data.args);
             } else if (data.type === 'debug_context') {
                 addDebugContext(data.system_prompt, data.messages);
             } else if (data.type === 'response') {
-                const msgDiv = addMsg('assistant', marked.parse(data.text || ''));
-                if (data.audio_url) {
-                    const audio = new Audio(data.audio_url);
-                    audio.play().catch(() => {
-                        // Autoplay blocked — show inline player as fallback
-                        const player = document.createElement('audio');
-                        player.src = data.audio_url;
-                        player.controls = true;
-                        player.style.display = 'block';
-                        player.style.marginTop = '8px';
-                        player.style.width = '100%';
-                        msgDiv.appendChild(player);
-                    });
-                }
+                addMsg('assistant', marked.parse(data.text || ''));
                 setProcessing(false);
             } else if (data.type === 'error') {
                 addMsg('assistant', '<span style="color:var(--red)">' + esc(data.text) + '</span>');
@@ -109,7 +114,7 @@
         addMsg('user', msgHtml);
 
         // Send with images
-        const payload = { type: 'message', text, debug: debugToggle.checked, tts: ttsToggle.checked };
+        const payload = { type: 'message', text, debug: debugToggle.checked };
         if (pendingImages.length > 0) {
             payload.images = pendingImages.map(img => ({
                 data: img.data,

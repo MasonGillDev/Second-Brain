@@ -29,10 +29,11 @@ class ClaudeAdapter(LLMAdapter):
             for tool in tools
         ]
 
-    async def chat(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> AdapterResponse:
+    async def chat(self, system: str, messages: list[dict], tools: list[dict] | None = None,
+                   model: str | None = None) -> AdapterResponse:
         """Send a message to Claude, returns an AdapterResponse."""
         kwargs = {
-            "model": config.MODEL,
+            "model": model or config.MODEL,
             "max_tokens": config.MAX_RESPONSE_TOKENS,
             "system": system,
             "messages": messages,

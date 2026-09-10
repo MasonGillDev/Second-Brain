@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Second Brain — Mission Control</title>
     <link rel="stylesheet" href="/static/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/css/workflows.css?v=10">
     <script>
         var saved = localStorage.getItem('sb-theme');
         var theme = saved ? saved : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -12,6 +13,7 @@
     </script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 </head>
 <body>
     <!-- Sidebar -->
@@ -35,6 +37,18 @@
             <button class="nav-btn" data-tab="tasks" title="Tasks">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
                 <span>Tasks</span>
+            </button>
+            <button class="nav-btn" data-tab="workflows" title="Workflows">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M9 6h6a3 3 0 013 3v6"/></svg>
+                <span>Workflows</span>
+            </button>
+            <button class="nav-btn" data-tab="triggers" title="Triggers">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span>Triggers</span>
+            </button>
+            <button class="nav-btn" data-tab="devices" title="Devices">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <span>Devices</span>
             </button>
             <button class="nav-btn" data-tab="sleep" title="Sleep Agent">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg>
@@ -93,9 +107,8 @@
         <!-- Chat -->
         <section class="tab-panel active" id="tab-chat">
             <div class="panel-header">
-                <h2>Agent Chat</h2>
+                <h2 id="chat-title" title="Current conversation thread">Agent Chat</h2>
                 <div class="header-actions">
-                    <label class="debug-toggle"><input type="checkbox" id="chat-tts-toggle"> TTS</label>
                     <label class="debug-toggle"><input type="checkbox" id="chat-debug-toggle"> Show Prompt</label>
                     <span class="status-dot" id="chat-status"></span>
                     <span class="status-label" id="chat-status-label">Connected</span>
@@ -446,6 +459,187 @@
             </div>
             <div class="log-stream" id="log-stream"></div>
         </section>
+
+        <!-- Triggers -->
+        <section class="tab-panel" id="tab-devices">
+            <div class="panel-header">
+                <h2>Devices</h2>
+                <div class="header-actions">
+                    <button id="dev-refresh-btn" class="btn-secondary btn-sm">Refresh</button>
+                </div>
+            </div>
+            <p class="trg-hint" style="color:var(--text-secondary,#888);font-size:13px;margin:0 0 12px">
+                Devices running the folder-watcher client. Drop a <code>.md</code> or <code>.docx</code>
+                file into a watched folder and it's uploaded and ingested automatically.
+                To add folders, edit <code>config.json</code> on the device and restart the watcher.
+            </p>
+            <table class="data-table" id="dev-table">
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Platform</th>
+                        <th>Watched folders</th>
+                        <th>Files sent</th>
+                        <th>Last seen</th>
+                    </tr>
+                </thead>
+                <tbody id="dev-tbody"></tbody>
+            </table>
+            <div id="dev-empty" class="wf-empty" style="display:none">
+                No devices registered yet. Set up the watcher client (see <code>device_watcher/README.md</code>).
+            </div>
+        </section>
+
+        <section class="tab-panel" id="tab-triggers">
+            <div class="panel-header">
+                <h2>Triggers</h2>
+                <div class="header-actions">
+                    <button id="trg-refresh-btn" class="btn-secondary btn-sm">Refresh</button>
+                </div>
+            </div>
+            <p class="trg-hint" style="color:var(--text-secondary,#888);font-size:13px;margin:0 0 12px">
+                Event-driven automations: webhooks and pollers that run a workflow or agent prompt.
+                Create and edit them by asking the agent in chat (triggers skill).
+            </p>
+            <table class="data-table" id="trg-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Source</th>
+                        <th>Action</th>
+                        <th>Sinks</th>
+                        <th>Filter</th>
+                        <th>Last fired</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="trg-tbody"></tbody>
+            </table>
+            <div id="trg-empty" class="wf-empty" style="display:none">No triggers yet. Ask the agent: &ldquo;create a trigger that&hellip;&rdquo;</div>
+
+            <div class="panel-header" style="margin-top:24px">
+                <h2>Recent firings</h2>
+            </div>
+            <table class="data-table" id="trg-log-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Trigger</th>
+                        <th>Source</th>
+                        <th>Status</th>
+                        <th>Result</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="trg-log-tbody"></tbody>
+            </table>
+            <div id="trg-log-empty" class="wf-empty" style="display:none">Nothing has fired yet.</div>
+        </section>
+
+        <!-- Workflows -->
+        <section class="tab-panel" id="tab-workflows">
+            <!-- List view -->
+            <div id="wf-list-view">
+                <div class="panel-header">
+                    <h2>Workflows</h2>
+                    <div class="header-actions">
+                        <button id="wf-new-btn" class="btn-primary">+ New Workflow</button>
+                    </div>
+                </div>
+                <table class="data-table" id="wf-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Steps</th>
+                            <th>Surfaces</th>
+                            <th class="col-actions">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="wf-tbody"></tbody>
+                </table>
+                <div id="wf-list-empty" class="wf-empty" style="display:none">No workflows yet. Click <b>+ New Workflow</b> to build one.</div>
+            </div>
+
+            <!-- Editor view -->
+            <div id="wf-editor-view" style="display:none">
+                <div class="panel-header wf-editor-header">
+                    <div class="wf-editor-title">
+                        <button id="wf-back-btn" class="btn-secondary btn-sm">&larr; Back</button>
+                        <h2 id="wf-editor-name">New Workflow</h2>
+                    </div>
+                    <div class="header-actions">
+                        <button id="wf-json-btn" class="btn-secondary">Raw JSON</button>
+                        <button id="wf-test-btn" class="btn-secondary">&#9654; Test</button>
+                        <button id="wf-save-btn" class="btn-primary">Save</button>
+                    </div>
+                </div>
+
+                <div id="wf-save-msg" class="wf-save-msg" style="display:none"></div>
+
+                <!-- Meta -->
+                <div class="wf-meta">
+                    <div class="wf-meta-row wf-meta-2col">
+                        <input id="wf-name" class="input-field" placeholder="workflow_name (snake_case)">
+                        <input id="wf-desc" class="input-field" placeholder="One line: what it does / when to run it">
+                    </div>
+                    <div class="wf-block">
+                        <div class="wf-block-head"><span>Parameters</span><button id="wf-add-param" class="action-btn">+ param</button></div>
+                        <div id="wf-params" class="wf-params"></div>
+                    </div>
+                    <div class="wf-block">
+                        <div class="wf-block-head"><span>Trigger phrases</span></div>
+                        <textarea id="wf-triggers" class="input-field" rows="2"
+                            title="These are embedded for semantic matching: when a request to Second Brain sounds like one of these, this workflow is suggested to the agent automatically."
+                            placeholder="One per line — things you'd say that should run this workflow. Leave empty to auto-generate on save."></textarea>
+                    </div>
+                    <div class="wf-meta-row wf-meta-inline">
+                        <input id="wf-output" class="input-field" placeholder="Output template (optional) — defaults to last step, e.g. {{brief}}">
+                        <label class="checkbox-label"><input type="checkbox" id="wf-schedulable"> Schedulable</label>
+                        <label class="checkbox-label"><input type="checkbox" id="wf-expose"> Expose as tool</label>
+                    </div>
+                </div>
+
+                <!-- Canvas: palette + steps -->
+                <div class="wf-canvas">
+                    <aside class="wf-palette">
+                        <input id="wf-palette-search" class="input-field wf-palette-search" placeholder="Search tools…">
+                        <div id="wf-palette-list" class="wf-palette-list"></div>
+                    </aside>
+                    <div class="wf-steps-wrap">
+                        <div id="wf-steps" class="wf-steps"></div>
+                        <div id="wf-steps-empty" class="wf-empty wf-drop-hint">Drag <b>tool</b>, <b>prompt</b>, or <b>workflow</b> nodes here to build the sequence.</div>
+                    </div>
+                </div>
+
+                <!-- Test results -->
+                <div id="wf-test-panel" class="wf-test-panel" style="display:none">
+                    <div class="wf-block-head">
+                        <span>Test</span>
+                        <button id="wf-test-close" class="action-btn">&times;</button>
+                    </div>
+                    <div id="wf-test-params" class="wf-test-params"></div>
+                    <div id="wf-test-run-row" class="wf-test-run-row" style="display:none">
+                        <button id="wf-test-run" class="btn-primary btn-sm">Run</button>
+                    </div>
+                    <div id="wf-test-result"></div>
+                </div>
+            </div>
+
+            <!-- Raw JSON modal -->
+            <div class="modal-overlay" id="wf-json-modal" style="display:none">
+                <div class="modal wf-json-modal">
+                    <h3>Raw JSON</h3>
+                    <p class="wf-json-hint">Edit or paste a full workflow definition. "Apply" loads it into the canvas.</p>
+                    <textarea id="wf-json-text" class="input-field wf-json-text" rows="18" spellcheck="false"></textarea>
+                    <div id="wf-json-error" class="wf-json-error"></div>
+                    <div class="modal-actions">
+                        <button id="wf-json-cancel" class="btn-secondary">Cancel</button>
+                        <button id="wf-json-apply" class="btn-primary">Apply to canvas</button>
+                    </div>
+                </div>
+            </div>
+        </section>
     </main>
 
     <script src="/static/js/app.js"></script>
@@ -459,6 +653,9 @@
     <script src="/static/js/costs.js"></script>
     <script src="/static/js/dashboards.js"></script>
     <script src="/static/js/projects.js"></script>
+    <script src="/static/js/workflows.js?v=12"></script>
+    <script src="/static/js/triggers.js?v=1"></script>
+    <script src="/static/js/devices.js?v=1"></script>
     <script src="/static/js/logs.js"></script>
     <script>
         // Theme toggle

@@ -12,29 +12,19 @@ import json
 import anthropic
 import config
 from keychain import get_secret
-from memory.conversation import ConversationMemory, estimate_tokens
+from memory.conversation import (ConversationMemory, estimate_tokens,
+                                 _is_tool_message, _message_to_text)
 from memory.vector_store import VectorStore
 from memory.ingestion import ingest_documents
 from memory.maintenance import MemoryMaintenance
 
 
 def _build_skill_manifest() -> str:
-    """Build the skill manifest block for the system prompt."""
-    manifest = getattr(config, "SKILL_MANIFEST", {})
-    if not manifest:
-        return ""
-    lines = []
-    for name, desc in manifest.items():
-        lines.append(f"- **{name}**: {desc}")
-    skills_text = "\n".join(lines)
-    return f"""
-
-## Available Skills
-You have access to specialized tool sets called "skills". To use one, call `activate_skill` with the skill name. Once activated, its tools become available for the rest of our conversation.
-
-{skills_text}
-
-Only activate skills when you need their tools. Memory tools are always available without activation."""
+    """All tools are exposed to the model at once now — there are no skills to
+    activate, so the old manifest is replaced by a single standing note."""
+    return ("\n\n## Tools\n"
+            "Every tool you have is available to you right now — call tools "
+            "directly. There are no skills to activate.")
 
 
 def _load_personality() -> str:
@@ -54,13 +44,17 @@ def _load_personality() -> str:
 
 
 def build_system_prompt() -> str:
-    from datetime import datetime
-    now = datetime.now()
+    # NOTE: this prompt must stay byte-stable across turns — it is the first
+    # block of every request, and any change invalidates the provider's prompt
+    # cache for the entire request. Dynamic content (current date/time,
+    # retrieved memories) is injected into the LAST user message instead
+    # (see build_messages), where it can change freely without busting the
+    # cached prefix. Do not add timestamps or per-turn content here.
     skill_manifest = _build_skill_manifest() if config.TOOLS_ENABLED else ""
     personality = _load_personality()
     return f"""You are Second Brain, a general-purpose AI assistant with persistent memory and tool capabilities.
 {personality}
-Current date and time: {now.strftime("%A, %B %d, %Y at %I:%M %p")}.
+The current date and time are provided in the [Turn context] block of the latest user message.
 
 You have access to several types of memory:
 - **Working Memory**: The current conversation (recent messages)
@@ -73,14 +67,23 @@ You have access to several types of memory:
 You also have access to tools that let you interact with the filesystem and other services.
 When a task requires reading files, listing directories, or other operations, use the available tools rather than asking the user to do it manually.
 
-## Procedures
-You can save reusable workflows by calling `save_procedure`. Save a procedure when:
-- The user explicitly asks ("save that", "remember how you did that").
-- You just completed a multi-step or non-obvious tool sequence likely to come up again — in that case, offer it: "Want me to save this as a procedure?"
+## Actions require tool calls — never fake them
+You can only affect the real world (lights, music, TV, calendar, files, anything)
+through tool calls. NEVER reply that an action is done unless you actually called
+the tool for it in THIS turn and saw its result. If you are about to say "Done"
+without having called a tool, stop and call the correct tool instead. If no
+suitable tool exists or the call fails, tell the user plainly — never pretend.
 
-When "Relevant Procedures" appears in Retrieved Memories below, treat those recipes as instructions for THIS request — don't reinvent the workflow.
+## Procedures — the operating rule
+EVERY task runs through a procedure. The "Procedure Index" in the latest user message's Retrieved Memories lists every saved procedure — before your first tool call on any task, decide which path you're on:
+1. **An indexed procedure fits the request** → call `get_procedure("<name>")` and follow it exactly, step by step. It is the approved way — it encodes corrections and context that tool docs don't have. When a procedure references another ("Run procedure: <name>"), fetch that one with `get_procedure` and follow it inline.
+2. **No indexed procedure fits** → you are in DISCOVERY. Call `get_procedure("create_procedure")` and follow it: it has you ask the user first, work the task out, and record a new procedure so path 1 handles this next time.
 
-Do NOT save procedures for single-tool answers, one-off lookups, or tasks unlikely to recur.
+There is NO third path. Never improvise a multi-step task without a procedure — even when a perfectly-named tool looks like the obvious answer, the index comes first. Skipping the check because the task "seems obvious" is how mistakes repeat.
+
+The ONLY things exempt from this rule: a single obvious tool call (turn on a light, one lookup), a quick factual answer, and plain conversation.
+
+Procedures are saved and updated ONLY through the create_procedure flow — never call save_procedure ad hoc, and never save procedures for single-tool actions or one-off tasks.
 {skill_manifest}
 
 ## Response Style
@@ -88,7 +91,7 @@ Do NOT save procedures for single-tool answers, one-off lookups, or tasks unlike
 - Do not volunteer extra information the user didn't ask for.
 - Do not editorialize, connect dots, or add commentary unless asked.
 - Retrieved memories are context for YOU, not content to dump on the user.
-- IMPORTANT: Check the "Retrieved Memories" section above BEFORE using search_memory. Only search if the answer is NOT already in the retrieved context.
+- IMPORTANT: Check the "Retrieved Memories" section in the latest user message's [Turn context] block BEFORE using search_memory. Only search if the answer is NOT already in the retrieved context.
 
 
 ## Personality
@@ -136,19 +139,72 @@ If nothing passes the test, return: []"""
 
 
 class MemoryManager:
-    def __init__(self, session_file: str | None = None):
+    def __init__(self, session_file: str | None = None, threads: bool = False):
         self.conversation = ConversationMemory(session_file=session_file)
         self.vector_store = VectorStore()
         self._llm_client = anthropic.Anthropic(api_key=get_secret("anthropic-api-key"))
         self.maintenance = MemoryMaintenance(self.vector_store, self._llm_client)
         self._exchange_count = 0
+        # Set when an extraction boundary is crossed; consumed by
+        # run_deferred_maintenance() between turns.
+        self._extraction_due = False
         self._ingest_docs_on_start()
+        self._sync_seed_procedures()
+
+        # Conversation threading (topic-scoped working memory). Per-instance
+        # opt-in: only the dashboard agent passes threads=True.
+        self.threads = None
+        if threads and config.THREADS_MODE != "off":
+            self.conversation.token_ceiling = config.THREAD_TOKEN_CEILING
+            try:
+                from memory.threads import ThreadManager
+                self.threads = ThreadManager(self.vector_store, self.conversation)
+                print(f"  [threads] enabled (mode={config.THREADS_MODE}, "
+                      f"idle={config.THREAD_IDLE_TIMEOUT_MIN:.0f}m, "
+                      f"ceiling={config.THREAD_TOKEN_CEILING}t)")
+            except Exception as e:
+                print(f"  [threads] init failed — threading disabled: {e}")
+                self.conversation.token_ceiling = None
+
+    def begin_turn(self, user_text: str) -> dict | None:
+        """Thread lifecycle hook for the start of an LLM-path turn (park stale
+        thread, route, resume/new). No-op (None) when threading is off."""
+        if self.threads is None:
+            return None
+        return self.threads.begin_turn(user_text)
+
+    def park_active_thread(self) -> None:
+        """Park the live thread (shutdown hook). No-op when threading is off."""
+        if self.threads is not None:
+            self.threads.park_active()
+
+    def cold_start(self) -> None:
+        """The 'clear' operation. Under threading: park the current thread
+        (kept + resumable) and start fresh — never deletes anything. Without
+        threading: legacy behavior (wipe the single session). Blocking (park
+        includes a Haiku title call) — invoke via asyncio.to_thread."""
+        if self.threads is not None:
+            self.threads.clear_active()
+        else:
+            self.conversation.clear_session()
 
     def _ingest_docs_on_start(self):
         """Ingest any new/changed docs at startup."""
         added = ingest_documents(self.vector_store)
         if added > 0 and config.LOG_TOKEN_USAGE:
             print(f"  [startup] Ingested {added} document chunks")
+
+    def _sync_seed_procedures(self):
+        """Re-sync the code-owned first-party procedures (create_procedure,
+        create_workflow, create_trigger, ...) into procedural memory. Idempotent
+        and non-fatal — every process that builds a MemoryManager re-syncs."""
+        try:
+            from memory.seed_procedures import sync_seed_procedures
+            synced = sync_seed_procedures(self.vector_store)
+            if synced and config.LOG_TOKEN_USAGE:
+                print(f"  [startup] Synced {synced} first-party procedures")
+        except Exception as e:
+            print(f"  [startup] seed procedure sync skipped: {e}")
 
     def add_user_message(self, content: str):
         self.conversation.add_message("user", content)
@@ -157,9 +213,30 @@ class MemoryManager:
         self.conversation.add_message("assistant", content)
         self._exchange_count += 1
 
-        # Run extraction every N exchanges
+        # Extraction is a blocking LLM call, so it only gets FLAGGED here; the
+        # agent runs it via run_deferred_maintenance() after the reply is out.
         if config.AUTO_EXTRACT_MEMORIES and self._exchange_count % config.EXTRACT_EVERY_N_EXCHANGES == 0:
+            self._extraction_due = True
+
+    def maintenance_due(self) -> bool:
+        """True when between-turns maintenance (extraction/summarization) is pending."""
+        return self._extraction_due or self.conversation.needs_summarization()
+
+    def run_deferred_maintenance(self):
+        """Run pending memory maintenance: extraction first (it reads the full
+        buffer), then summarization (which trims it). Blocking — the agent calls
+        this via asyncio.to_thread from a background task, serialized against
+        turns by AgentCore's maintenance lock."""
+        did_work = False
+        if self._extraction_due:
+            self._extraction_due = False
             self.extract_memories()
+            did_work = True
+        if self.conversation.needs_summarization():
+            self.conversation.summarize_oldest()
+            did_work = True
+        if did_work:
+            self.conversation.save_session()
 
     def remember(self, text: str, memory_type: str = "long_term", metadata: dict | None = None) -> str:
         """Store something in long-term memory (with dedup)."""
@@ -188,11 +265,14 @@ class MemoryManager:
         if not messages:
             return
 
-        # Format recent messages for the prompt
+        # Format recent messages for the prompt. Tool machinery is skipped —
+        # extraction wants durable user facts, not call/result noise.
         msg_text = ""
         for msg in messages:
+            if _is_tool_message(msg):
+                continue
             role = "User" if msg["role"] == "user" else "Assistant"
-            msg_text += f"{role}: {msg['content']}\n\n"
+            msg_text += f"{role}: {_message_to_text(msg)}\n\n"
 
         # Get existing memories to avoid duplicates
         existing = ""
@@ -273,6 +353,41 @@ class MemoryManager:
             return False
         return True
 
+    def _procedure_index_section(self) -> str:
+        """The full procedure index — name + trigger-condition description of
+        EVERY saved procedure — injected into every non-trivial turn.
+
+        Routing cannot depend on the model choosing to call list_procedures:
+        tested three times, it reaches for the best-named task tool instead,
+        every time. So the harness puts the choices in front of it and leaves
+        only the fit-judgment to the model. Cheap at current scale; when the
+        registry outgrows PROCEDURE_INDEX_MAX, replace this with real procedure
+        retrieval (trigger-phrase aliases, like workflows)."""
+        try:
+            procs = self.vector_store.get_all("procedural", limit=500)
+        except Exception:
+            return ""
+        entries = sorted(
+            (p["metadata"]["name"], (p["metadata"].get("description") or "").strip())
+            for p in procs if p["metadata"].get("name")
+        )
+        if not entries:
+            return ""
+        shown = entries[:config.PROCEDURE_INDEX_MAX]
+        lines = "\n".join(f"- {name} — {desc}" for name, desc in shown)
+        omitted = (f"\n(+{len(entries) - len(shown)} more — call list_procedures for the rest)"
+                   if len(entries) > len(shown) else "")
+        if config.LOG_TOKEN_USAGE:
+            print(f"  [retrieval] Injected procedure index ({len(shown)} procedures)")
+        return (
+            "### Procedure Index (every saved procedure)\n"
+            f"{lines}{omitted}\n"
+            "If one fits this request: call get_procedure(\"<name>\") and follow it "
+            "step by step BEFORE any other tool call. If none fits and the task "
+            "needs more than a single obvious tool call: call "
+            "get_procedure(\"create_procedure\") and follow it."
+        )
+
     def retrieve_context(self, query: str) -> str:
         """Retrieve relevant memories from all collections for a query."""
         if not self._should_retrieve(query):
@@ -282,7 +397,56 @@ class MemoryManager:
 
         sections = []
 
-        # Procedural memories FIRST — these tell the model HOW to handle the request.
+        # Procedure index FIRST — the routing layer. Always present so the model
+        # never has to remember to go looking for it.
+        proc_index = self._procedure_index_section()
+        if proc_index:
+            sections.append(proc_index)
+
+        # Workflow triggers FIRST — the strongest signal. If the request matches a
+        # saved workflow (by trigger phrase or description), the agent should RUN
+        # the workflow rather than re-derive its steps by hand.
+        try:
+            wf_hits = self.vector_store.query(
+                "workflows", query,
+                top_k=config.RETRIEVAL_TOP_K_WORKFLOWS,
+                min_relevance=config.RETRIEVAL_MIN_RELEVANCE_WORKFLOWS,
+            )
+        except Exception:
+            wf_hits = []
+        if wf_hits:
+            # Many entries can point at one workflow (description + each trigger);
+            # dedupe by workflow keeping the best score, then take the top 2.
+            best: dict = {}
+            for m in wf_hits:
+                wname = m["metadata"].get("workflow")
+                if wname and (wname not in best or m["relevance"] > best[wname]["relevance"]):
+                    best[wname] = m
+            top = sorted(best.values(), key=lambda m: -m["relevance"])[:2]
+            try:
+                import workflow_store as _wfs
+                lines = []
+                for m in top:
+                    w = _wfs.get_workflow(m["metadata"]["workflow"])
+                    if not w:
+                        continue
+                    params = ", ".join(p.get("name", "") for p in (w.get("params") or [])) or "none"
+                    lines.append(f"- **{w['name']}** — {w.get('description', '')} (params: {params})")
+                if lines:
+                    sections.append(
+                        "### Matching Workflows (run these instead of doing the steps manually)\n"
+                        "The request matches saved workflows. Activate the `workflows` skill if needed, "
+                        "then call `run_workflow` with the workflow_name (and params as a JSON string). "
+                        "Do NOT recreate the workflow's steps with individual tools.\n" + "\n".join(lines)
+                    )
+                    if config.LOG_TOKEN_USAGE:
+                        summary = [f"{m['metadata']['workflow']}@{m['relevance']}" for m in top]
+                        print(f"  [retrieval] Injected workflows: {summary}")
+            except Exception as e:
+                if config.LOG_TOKEN_USAGE:
+                    print(f"  [retrieval] workflow injection failed: {e}")
+
+        # Procedural memories — these tell the model HOW to handle the request.
         procedural = self.vector_store.query(
             "procedural", query,
             top_k=config.RETRIEVAL_TOP_K_PROCEDURAL,
@@ -360,12 +524,21 @@ class MemoryManager:
         """
         Build the full message payload for the Claude API.
         Returns (system_prompt, messages).
+
+        Cache discipline: the system prompt and prior messages form the stable,
+        cacheable prefix. All per-turn dynamic content — current date/time and
+        retrieved memories — rides in a [Turn context] block appended to a COPY
+        of the last user message (the tail), so it never busts the cached prefix
+        and never persists into conversation history.
         """
+        from datetime import datetime
+
         # Get retrieved memory context
         retrieved = self.retrieve_context(current_query)
 
-        # Build system prompt with retrieved memories
+        # Stable system prompt (no per-turn content — see build_system_prompt)
         system = build_system_prompt()
+
         if retrieved:
             retrieved_tokens = estimate_tokens(retrieved)
             budget = int(config.TOTAL_CONTEXT_BUDGET * config.BUDGET_RETRIEVED_MEMORIES)
@@ -377,14 +550,24 @@ class MemoryManager:
                 trim_len = int(len(retrieved) * ratio)
                 retrieved = retrieved[:trim_len] + "\n[...truncated]"
 
-            system += f"\n\n---\n## Retrieved Memories\n{retrieved}"
-
         # Get conversation context (summary + recent messages)
         messages = self.conversation.get_context()
 
+        # Per-turn tail: date/time + retrieved memories, appended to a copy of
+        # the final user message. get_context() returns references to the stored
+        # message dicts — replace the list element with a copy so the injected
+        # block is request-only and never saved to the session file.
+        now = datetime.now()
+        tail = f"\n\n[Turn context — current date and time: {now.strftime('%A, %B %d, %Y at %I:%M %p')}."
+        tail += " This block is injected context, not part of the user's message.]"
+        if retrieved:
+            tail += f"\n\n## Retrieved Memories\n{retrieved}"
+        if messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
+            messages[-1] = {**messages[-1], "content": messages[-1]["content"] + tail}
+
         if config.LOG_TOKEN_USAGE:
             sys_tokens = estimate_tokens(system)
-            msg_tokens = sum(estimate_tokens(m["content"]) for m in messages)
+            msg_tokens = sum(estimate_tokens(_message_to_text(m, full=True)) for m in messages)
             print(f"  [context] system: ~{sys_tokens}t | messages: ~{msg_tokens}t | total: ~{sys_tokens + msg_tokens}t")
 
         return system, messages

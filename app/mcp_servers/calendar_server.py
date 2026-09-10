@@ -1,256 +1,208 @@
 """
-Apple Calendar MCP Server.
+Internal Calendar MCP Server.
 
-Exposes macOS Calendar.app via AppleScript as MCP tools.
-Runs as a local subprocess — communicates over stdin/stdout.
+The agent's own calendar. Events live in SQLite (calendar_store) as the source
+of truth — this replaces the old AppleScript bridge to macOS Calendar.app, which
+gave better, tighter integration (custom fields, reminders, range queries) than
+shelling out to Calendar.app.
 
-Uses parallel per-calendar queries to avoid the ~30s slowdown
-from iterating all calendars in a single AppleScript call.
+Supports single-day and multi-day events (e.g. trips), timed or all-day, with a
+title, time frame, location, and notes; reading a day, a week, or a date range;
+and reminders that tie into the scheduler daemon.
+
+All the heavy lifting lives in calendar_store.py; this server is a thin,
+well-described wrapper that returns readable text.
 """
 
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+import sys
+import os
+
+# Add project root (app/) to path so we can import the shared store module.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("apple_calendar")
+import calendar_store as store
 
-
-def run_applescript(script: str) -> str:
-    """Run an AppleScript and return the output."""
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=15,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"AppleScript error: {result.stderr.strip()}")
-    return result.stdout.strip()
-
-
-def get_calendar_names() -> list[str]:
-    """Get all calendar names."""
-    raw = run_applescript('tell application "Calendar" to get name of every calendar')
-    return [n.strip() for n in raw.split(",")]
-
-
-def query_single_calendar(cal_name: str, start_str: str, end_str: str) -> str:
-    """Query events from a single calendar."""
-    script = f'''
-tell application "Calendar"
-    set startDate to date "{start_str}"
-    set endDate to date "{end_str}"
-    set output to ""
-    set cal to calendar "{cal_name}"
-    set evts to (every event of cal whose start date ≥ startDate and start date < endDate)
-    repeat with evt in evts
-        set evtStart to start date of evt
-        set evtEnd to end date of evt
-        set output to output & (summary of evt) & " | " & (evtStart as string) & " | " & (evtEnd as string) & " | " & "{cal_name}" & linefeed
-    end repeat
-    return output
-end tell'''
-    try:
-        return run_applescript(script)
-    except Exception:
-        return ""
-
-
-def query_all_calendars(start_str: str, end_str: str) -> str:
-    """Query all calendars in parallel."""
-    cal_names = get_calendar_names()
-    results = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {
-            pool.submit(query_single_calendar, name, start_str, end_str): name
-            for name in cal_names
-        }
-        for future in futures:
-            result = future.result()
-            if result:
-                results.append(result)
-    return "\n".join(results).strip()
+mcp = FastMCP("calendar")
 
 
 @mcp.tool()
-def list_calendars() -> str:
-    """List all calendars available in Apple Calendar."""
-    script = 'tell application "Calendar" to get name of every calendar'
-    return run_applescript(script)
-
-
-@mcp.tool()
-def get_events(date: str = "", days: int = 1, calendar_name: str = "") -> str:
-    """
-    Get events from Apple Calendar.
-
-    Args:
-        date: Start date in YYYY-MM-DD format. Defaults to today.
-        days: Number of days to look ahead (default 1 = just this day).
-        calendar_name: Filter to a specific calendar. Empty = all calendars.
-    """
-    if date:
-        try:
-            start = datetime.strptime(date, "%Y-%m-%d")
-        except ValueError:
-            return f"Invalid date format: {date}. Use YYYY-MM-DD."
-    else:
-        start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-    end = start + timedelta(days=days)
-    start_str = start.strftime("%B %d, %Y 12:00:00 AM")
-    end_str = end.strftime("%B %d, %Y 12:00:00 AM")
-
-    if calendar_name:
-        result = query_single_calendar(calendar_name, start_str, end_str)
-    else:
-        result = query_all_calendars(start_str, end_str)
-
-    if not result:
-        date_label = date or "today"
-        return f"No events found for {date_label} (+{days} day{'s' if days > 1 else ''})."
-    return result
-
-
-@mcp.tool()
-def create_event(
+def add_event(
     title: str,
     start_date: str,
+    end_date: str = "",
     start_time: str = "",
     end_time: str = "",
-    calendar_name: str = "Calendar",
+    all_day: bool = False,
     location: str = "",
     notes: str = "",
-    all_day: bool = False,
+    reminder_minutes: int = 0,
 ) -> str:
     """
-    Create a new event in Apple Calendar.
+    Add an event to the calendar. Handles single-day and multi-day events,
+    timed or all-day.
+
+      - Timed event:  give start_date + start_time (end_time optional).
+      - All-day event: set all_day=true (or just omit start_time).
+      - Multi-day event / trip: give end_date later than start_date — usually
+        with all_day=true (e.g. a vacation Jul 5 → Jul 8).
 
     Args:
-        title: Event title/summary.
-        start_date: Date in YYYY-MM-DD format.
-        start_time: Start time in HH:MM format (24h). Ignored if all_day=True.
-        end_time: End time in HH:MM format (24h). Ignored if all_day=True.
-        calendar_name: Which calendar to add to (default "Calendar").
-        location: Event location (optional).
-        notes: Event notes/description (optional).
-        all_day: If true, creates an all-day event.
+        title: Event title.
+        start_date: Start day, YYYY-MM-DD.
+        end_date: Last day for a multi-day event, YYYY-MM-DD. Omit for one day.
+        start_time: Start time HH:MM (24h). Omit (or set all_day) for all-day.
+        end_time: End time HH:MM (24h). Defaults to one hour after start_time.
+        all_day: True for an all-day event (no clock time).
+        location: Optional location.
+        notes: Optional notes/description.
+        reminder_minutes: Minutes before the event to be reminded (0 = no
+            reminder). For all-day events the reminder counts back from 9:00 AM
+            on the start date. Reminders are delivered via the scheduler.
     """
     try:
-        dt = datetime.strptime(start_date, "%Y-%m-%d")
-    except ValueError:
-        return f"Invalid date format: {start_date}. Use YYYY-MM-DD."
-
-    if all_day:
-        start_str = dt.strftime("%B %d, %Y 12:00:00 AM")
-        end_dt = dt + timedelta(days=1)
-        end_str = end_dt.strftime("%B %d, %Y 12:00:00 AM")
-        allday_prop = "set allday event of newEvent to true"
-    else:
-        if not start_time or not end_time:
-            return "start_time and end_time are required for non-all-day events. Use HH:MM format."
-        try:
-            st = datetime.strptime(start_time, "%H:%M")
-            et = datetime.strptime(end_time, "%H:%M")
-        except ValueError:
-            return "Invalid time format. Use HH:MM (24-hour)."
-        start_dt = dt.replace(hour=st.hour, minute=st.minute)
-        end_dt = dt.replace(hour=et.hour, minute=et.minute)
-        start_str = start_dt.strftime("%B %d, %Y %I:%M:%S %p")
-        end_str = end_dt.strftime("%B %d, %Y %I:%M:%S %p")
-        allday_prop = ""
-
-    title_safe = title.replace('"', '\\"')
-    location_safe = location.replace('"', '\\"')
-    notes_safe = notes.replace('"', '\\"')
-
-    location_prop = f'set location of newEvent to "{location_safe}"' if location else ""
-    notes_prop = f'set description of newEvent to "{notes_safe}"' if notes else ""
-
-    script = f'''
-tell application "Calendar"
-    set targetCal to calendar "{calendar_name}"
-    set newEvent to make new event at end of events of targetCal with properties {{summary:"{title_safe}", start date:date "{start_str}", end date:date "{end_str}"}}
-    {allday_prop}
-    {location_prop}
-    {notes_prop}
-    return "Created: " & summary of newEvent & " on " & (start date of newEvent as string)
-end tell'''
-
-    return run_applescript(script)
+        ev = store.create_event(
+            title=title, start_date=start_date, end_date=end_date,
+            start_time=start_time, end_time=end_time, all_day=all_day,
+            location=location, notes=notes, reminder_minutes=reminder_minutes,
+        )
+    except ValueError as e:
+        return f"Could not add event: {e}"
+    return "Added:\n" + store.format_event(ev) + store.reminder_status(ev)
 
 
 @mcp.tool()
-def search_events(query: str, days_ahead: int = 30) -> str:
+def get_day(date: str = "") -> str:
     """
-    Search for events by title across all calendars.
+    List events on a single day.
 
     Args:
-        query: Text to search for in event titles.
-        days_ahead: How many days ahead to search (default 30).
+        date: Day to read, YYYY-MM-DD. Defaults to today.
     """
-    start = datetime.now().replace(hour=0, minute=0, second=0)
-    end = start + timedelta(days=days_ahead)
-    start_str = start.strftime("%B %d, %Y 12:00:00 AM")
-    end_str = end.strftime("%B %d, %Y 12:00:00 AM")
-
-    all_events = query_all_calendars(start_str, end_str)
-    if not all_events:
-        return f"No events matching '{query}' found in the next {days_ahead} days."
-
-    # Filter by query client-side (faster than per-calendar AppleScript filtering)
-    query_lower = query.lower()
-    matched = []
-    for line in all_events.split("\n"):
-        if query_lower in line.lower():
-            matched.append(line)
-
-    if not matched:
-        return f"No events matching '{query}' found in the next {days_ahead} days."
-    return "\n".join(matched)
+    try:
+        return store.day_view(date)
+    except ValueError as e:
+        return str(e)
 
 
 @mcp.tool()
-def delete_event(title: str, date: str, calendar_name: str = "") -> str:
+def get_week(date: str = "") -> str:
     """
-    Delete an event by title and date.
+    List events for the Monday–Sunday week containing a date.
 
     Args:
-        title: Exact title of the event to delete.
-        date: Date of the event in YYYY-MM-DD format.
-        calendar_name: Calendar to delete from. If empty, searches all calendars.
+        date: Any day in the target week, YYYY-MM-DD. Defaults to this week.
     """
     try:
-        dt = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return f"Invalid date format: {date}. Use YYYY-MM-DD."
+        return store.week_view(date)
+    except ValueError as e:
+        return str(e)
 
-    start_str = dt.strftime("%B %d, %Y 12:00:00 AM")
-    end_dt = dt + timedelta(days=1)
-    end_str = end_dt.strftime("%B %d, %Y 12:00:00 AM")
-    title_safe = title.replace('"', '\\"')
 
-    calendars_to_check = [calendar_name] if calendar_name else get_calendar_names()
-    total_deleted = 0
+@mcp.tool()
+def get_range(start_date: str, end_date: str) -> str:
+    """
+    List events overlapping an inclusive date range. Multi-day events that span
+    into the range are included.
 
-    for cal in calendars_to_check:
-        script = f'''
-tell application "Calendar"
-    set deleted to 0
-    set cal to calendar "{cal}"
-    set evts to (every event of cal whose summary is "{title_safe}" and start date ≥ date "{start_str}" and start date < date "{end_str}")
-    repeat with evt in evts
-        delete evt
-        set deleted to deleted + 1
-    end repeat
-    return deleted
-end tell'''
-        try:
-            result = run_applescript(script)
-            total_deleted += int(result)
-        except Exception:
-            continue
+    Args:
+        start_date: First day, YYYY-MM-DD.
+        end_date: Last day, YYYY-MM-DD.
+    """
+    try:
+        return store.range_view(start_date, end_date)
+    except ValueError as e:
+        return str(e)
 
-    return f'Deleted {total_deleted} event(s) matching "{title}" on {date}.'
+
+@mcp.tool()
+def get_event(event_id: int) -> str:
+    """
+    Get full details for one event by its id.
+
+    Args:
+        event_id: The event id (shown in brackets in listings, e.g. [12]).
+    """
+    ev = store.get_event(event_id)
+    if not ev:
+        return f"No event with id {event_id}."
+    return store.format_event(ev) + store.reminder_status(ev)
+
+
+@mcp.tool()
+def update_event(
+    event_id: int,
+    title: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    start_time: str = "",
+    end_time: str = "",
+    all_day: bool | None = None,
+    location: str = "",
+    notes: str = "",
+    reminder_minutes: int = -1,
+) -> str:
+    """
+    Update an existing event. Only supplied fields change. If you change the
+    date or time, the reminder (if any) is rescheduled automatically.
+
+    Args:
+        event_id: The event id to update.
+        title: New title (omit to keep).
+        start_date / end_date / start_time / end_time: New time frame pieces
+            (omit any you don't want to change), YYYY-MM-DD / HH:MM.
+        all_day: Set true/false to switch all-day vs timed; omit to keep.
+        location: New location (omit to keep).
+        notes: New notes (omit to keep).
+        reminder_minutes: -1 = leave the reminder unchanged; 0 = remove the
+            reminder; a positive number = remind that many minutes before.
+    """
+    kwargs: dict = {}
+    if title:
+        kwargs["title"] = title
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+    if start_time:
+        kwargs["start_time"] = start_time
+    if end_time:
+        kwargs["end_time"] = end_time
+    if all_day is not None:
+        kwargs["all_day"] = all_day
+    if location:
+        kwargs["location"] = location
+    if notes:
+        kwargs["notes"] = notes
+    if reminder_minutes is not None and reminder_minutes >= 0:
+        # 0 clears the reminder; >0 sets it (store maps 0 → None).
+        kwargs["reminder_minutes"] = reminder_minutes
+
+    if not kwargs:
+        return "Nothing to update — supply at least one field to change."
+
+    try:
+        ev = store.update_event(event_id, **kwargs)
+    except ValueError as e:
+        return f"Could not update event: {e}"
+    if not ev:
+        return f"No event with id {event_id}."
+    return "Updated:\n" + store.format_event(ev) + store.reminder_status(ev)
+
+
+@mcp.tool()
+def delete_event(event_id: int) -> str:
+    """
+    Delete an event by id (also cancels its reminder, if any).
+
+    Args:
+        event_id: The event id to delete.
+    """
+    ev = store.delete_event(event_id)
+    if not ev:
+        return f"No event with id {event_id}."
+    return f'Deleted [{ev["id"]}] {ev["title"]}.'
 
 
 if __name__ == "__main__":

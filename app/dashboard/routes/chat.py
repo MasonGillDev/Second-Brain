@@ -3,7 +3,6 @@
 import asyncio
 import json
 from quart import Blueprint, websocket, current_app, session
-from interfaces.tts import generate_speech_audio
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -19,6 +18,29 @@ async def chat_ws():
     async def send_json(data):
         await websocket.send(json.dumps(data))
 
+    last_thread_id = None
+
+    async def send_thread_info():
+        """Tell the UI which thread this chat is in (panel header), and — when
+        the thread CHANGED since this connection last looked (resume, /clear,
+        reconnect) — include its full transcript so the feed can be rebuilt."""
+        nonlocal last_thread_id
+        threads = agent.memory.threads
+        if threads is None:
+            return
+        info = threads.active_info() or {"id": None, "title": None}
+        payload = {"type": "thread", **info}
+        if info.get("id") != last_thread_id:
+            conv = agent.memory.conversation
+            payload["history"] = {
+                "summary": conv.rolling_summary,
+                "messages": conv.display_messages(),
+            }
+            last_thread_id = info.get("id")
+        await send_json(payload)
+
+    await send_thread_info()
+
     while True:
         raw = await websocket.receive()
         data = json.loads(raw)
@@ -32,13 +54,17 @@ async def chat_ws():
             text = data.get("text", "").strip()
             images = data.get("images")  # list of {data: base64, media_type: str}
             debug = data.get("debug", False)
-            tts = data.get("tts", False)
             if not text and not images:
                 continue
 
-            # Handle /clear command
+            # Handle /clear command. Under threading this is a cold start —
+            # the thread is parked (kept + resumable), never deleted. Off-thread
+            # via to_thread: parking includes a blocking Haiku title call.
             if text.strip() == "/clear":
-                agent.memory.conversation.clear_session()
+                await asyncio.to_thread(agent.memory.cold_start)
+                # Thread info first: its history rebuild empties the feed, THEN
+                # the confirmation lands in the fresh feed.
+                await send_thread_info()
                 await send_json({"type": "response", "text": "Cleared. What do you need?"})
                 continue
 
@@ -132,12 +158,6 @@ async def chat_ws():
                         "messages": getattr(agent, "_last_messages", []),
                     })
 
-                # Generate TTS audio if toggled on
-                audio_url = None
-                if tts and response_text:
-                    await send_json({"type": "status", "text": "Generating audio..."})
-                    filename = await generate_speech_audio(response_text)
-                    if filename:
-                        audio_url = f"/static/audio/{filename}"
-
-                await send_json({"type": "response", "text": response_text, "audio_url": audio_url})
+                await send_json({"type": "response", "text": response_text})
+                # The turn may have parked/resumed/created a thread — refresh header
+                await send_thread_info()

@@ -23,11 +23,19 @@ class Usage:
     """Token usage for a single API call."""
     input_tokens: int = 0
     output_tokens: int = 0
+    # Prompt tokens served from the provider's prefix cache (subset of
+    # input_tokens); billed at the cache-read rate (~3-4x cheaper).
+    cached_input_tokens: int = 0
+    # Authoritative cost reported by the provider (includes cache discounts);
+    # 0.0 when the provider doesn't report one.
+    cost_usd: float = 0.0
 
     def __add__(self, other: "Usage") -> "Usage":
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cached_input_tokens=self.cached_input_tokens + other.cached_input_tokens,
+            cost_usd=self.cost_usd + other.cost_usd,
         )
 
 
@@ -53,7 +61,7 @@ class LLMAdapter(ABC):
         """
 
     @abstractmethod
-    async def chat(self, system: str, messages: list[dict], tools: Any = None) -> AdapterResponse:
+    async def chat(self, system: str, messages: list[dict], tools: Any = None, model: str | None = None) -> AdapterResponse:
         """
         Send a message to the LLM. Returns an AdapterResponse.
         The messages list uses the provider's native format.

@@ -7,9 +7,13 @@ The separate scheduler.py daemon reads this file and executes due tasks.
 
 import json
 import os
+import sys
 import uuid
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from delivery import VALID_SINKS
 
 mcp = FastMCP("scheduler")
 
@@ -37,6 +41,7 @@ def create_scheduled_task(
     prompt: str,
     schedule: str,
     notify_telegram: bool = True,
+    sinks: list[str] | None = None,
 ) -> str:
     """
     Create a new scheduled task.
@@ -54,7 +59,14 @@ def create_scheduled_task(
                  "0 */2 * * *"  = every 2 hours
                  "0 8,18 * * *" = 8:00 AM and 6:00 PM daily
         notify_telegram: If true, send the result to Telegram (default true).
+        sinks: Where to deliver the result: any of "telegram", "voice" (spoken
+               aloud by the voice assistant), "silent" (no delivery — the task's
+               side effects are the point). Default: ["telegram"] (or ["silent"]
+               if notify_telegram is false).
     """
+    if sinks and not set(sinks) <= VALID_SINKS:
+        return f"Invalid sinks {sorted(set(sinks) - VALID_SINKS)}. Valid: {sorted(VALID_SINKS)}."
+
     tasks = _load_tasks()
 
     # Check for duplicate name
@@ -68,6 +80,7 @@ def create_scheduled_task(
         "prompt": prompt,
         "schedule": schedule,
         "notify_telegram": notify_telegram,
+        "sinks": sinks or (["telegram"] if notify_telegram else ["silent"]),
         "enabled": True,
         "created_at": datetime.now().isoformat(),
         "last_run": None,
@@ -91,10 +104,12 @@ def list_scheduled_tasks() -> str:
     for t in tasks:
         status = "enabled" if t["enabled"] else "disabled"
         last = t["last_run"] or "never"
+        sinks = ", ".join(t.get("sinks") or ["telegram"])
         lines.append(
             f"- [{t['id']}] {t['name']} ({status})\n"
             f"  Schedule: {t['schedule']}\n"
             f"  Prompt: {t['prompt'][:80]}\n"
+            f"  Sinks: {sinks}\n"
             f"  Last run: {last}"
         )
 

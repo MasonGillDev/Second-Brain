@@ -121,53 +121,32 @@ def _field_matches(field: str, value: int, min_val: int, max_val: int) -> bool:
     return False
 
 
-async def send_to_bot(prompt: str, task_name: str):
+async def send_to_bot(prompt: str, task_name: str, sinks: list[str] | None = None):
     """
-    Send a message to the Telegram bot as if the user sent it.
-    The bot processes it with full tool access and replies.
+    Run a scheduled task's prompt through a fresh agent and deliver the result
+    to the task's sinks (voice / telegram / silent — see delivery.py).
     """
-    import httpx
+    import delivery
 
-    from keychain import get_secret
-    try:
-        token = get_secret("telegram-bot-token")
-    except RuntimeError:
-        token = None
-    user_id = config.TELEGRAM_NOTIFY_USER_ID
+    sinks = sinks or ["telegram"]
 
-    if not token or not user_id:
-        print("  [scheduler] Missing telegram-bot-token in Keychain or TELEGRAM_NOTIFY_USER_ID")
-        return
+    # Pre-run notice only makes sense on a chat channel — a spoken
+    # "running scheduled task" right before the spoken result is just noise.
+    if "telegram" in sinks:
+        await delivery.send_telegram(f"🔔 Running scheduled task: {task_name}")
 
-    # First, notify the user that a scheduled task is running
-    notify_url = f"https://api.telegram.org/bot{token}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        await client.post(notify_url, json={
-            "chat_id": user_id,
-            "text": f"🔔 Running scheduled task: {task_name}",
-        })
-
-    # Now send the actual prompt as a message to the bot.
-    # We use the bot's /sendMessage to simulate the task,
-    # but the bot needs to process it. We'll use a special prefix
-    # so the bot knows it's a scheduled task.
-    #
-    # Since we can't inject messages into the bot's handler directly
-    # via the Telegram API, we send the prompt as a regular message
-    # from the bot to the user, then the user's bot processes it.
-    #
-    # Actually, the cleanest approach: use the Telegram Bot API's
-    # getUpdates won't work. Instead, we call the agent core directly
-    # but WITH tools enabled, since the Telegram bot's MCP servers
-    # are separate processes that can handle concurrent connections.
-
-    # Import here to avoid circular imports at module level
+    # Run the agent core directly WITH tools enabled, but remote_tools: no MCP
+    # servers are spawned per task — every tool call proxies to the dashboard's
+    # single running set over the toolbus API. This also makes per-task agent
+    # startup near-instant (no subprocess fleet to boot and tear down).
+    # Import here to avoid circular imports at module level.
     from agent.core import AgentCore
     from memory.conversation import ConversationMemory
 
     # Scheduler uses its own session so it doesn't load Telegram context
     agent = AgentCore(
         enable_tools=True,
+        remote_tools=True,
         session_file=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memory", "data", "session_scheduler.json"),
     )
     await agent.start()
@@ -177,34 +156,27 @@ async def send_to_bot(prompt: str, task_name: str):
         print(f"  [scheduler] Response: {response[:100]}...")
 
         # Inject a summary into the Telegram session so the user can ask about it
-        try:
-            telegram_conv = ConversationMemory()  # loads default session.json
-            summary = response[:500] if len(response) > 500 else response
-            telegram_conv.add_message(
-                "assistant",
-                f"[Scheduled task '{task_name}' ran at {datetime.now().strftime('%I:%M %p')}]\n"
-                f"Prompt: {prompt[:200]}\n"
-                f"Result: {summary}",
-            )
-            telegram_conv.save_session()
-        except Exception as e2:
-            print(f"  [scheduler] Failed to inject into Telegram session: {e2}")
+        if "telegram" in sinks:
+            try:
+                telegram_conv = ConversationMemory()  # loads default session.json
+                summary = response[:500] if len(response) > 500 else response
+                telegram_conv.add_message(
+                    "assistant",
+                    f"[Scheduled task '{task_name}' ran at {datetime.now().strftime('%I:%M %p')}]\n"
+                    f"Prompt: {prompt[:200]}\n"
+                    f"Result: {summary}",
+                )
+                telegram_conv.save_session()
+            except Exception as e2:
+                print(f"  [scheduler] Failed to inject into Telegram session: {e2}")
 
-        # Send the response to Telegram
-        chunks = [response[i:i+4096] for i in range(0, len(response), 4096)]
-        async with httpx.AsyncClient() as client:
-            for chunk in chunks:
-                await client.post(notify_url, json={
-                    "chat_id": user_id,
-                    "text": chunk,
-                })
+        await delivery.deliver(sinks, response)
     except Exception as e:
         print(f"  [scheduler] Task failed: {e}")
-        async with httpx.AsyncClient() as client:
-            await client.post(notify_url, json={
-                "chat_id": user_id,
-                "text": f"⚠️ Task '{task_name}' failed: {e}",
-            })
+        await delivery.deliver(
+            [s for s in sinks if s != "silent"],
+            f"⚠️ Task '{task_name}' failed: {e}",
+        )
     finally:
         try:
             await agent.shutdown()
@@ -224,7 +196,8 @@ async def run_task(task: dict):
     print(f"  [scheduler] Running task: {task['name']}")
     print(f"  [scheduler] Prompt: {task['prompt'][:80]}")
     try:
-        await asyncio.create_task(send_to_bot(task["prompt"], task["name"]))
+        await asyncio.create_task(
+            send_to_bot(task["prompt"], task["name"], task.get("sinks") or ["telegram"]))
     except asyncio.CancelledError:
         # Spurious cancellation leaked from MCP teardown — the task itself
         # already ran. Swallow it so the daemon keeps running. (A real

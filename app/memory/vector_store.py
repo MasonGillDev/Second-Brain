@@ -66,6 +66,22 @@ class VectorStore:
                 name="project_knowledge",
                 metadata={"description": "Per-project docs, tasks, notes, and commits for semantic search"},
             ),
+            "workflows": self._client.get_or_create_collection(
+                name="workflows",
+                metadata={"description": "Workflow trigger phrases + descriptions for auto-injection"},
+            ),
+            "voice_intents": self._client.get_or_create_collection(
+                name="voice_intents",
+                metadata={"description": "Fast-path intent examples for the voice command router"},
+            ),
+            "thread_messages": self._client.get_or_create_collection(
+                name="thread_messages",
+                metadata={"description": "Per-message chunks of parked conversation threads (routing index)"},
+            ),
+            "thread_summaries": self._client.get_or_create_collection(
+                name="thread_summaries",
+                metadata={"description": "One title+summary embedding per parked conversation thread"},
+            ),
         }
 
     def add(self, collection_name: str, text: str, metadata: dict | None = None, doc_id: str | None = None):
@@ -164,6 +180,17 @@ class VectorStore:
 
         return memories
 
+    def get(self, collection_name: str, doc_id: str) -> dict | None:
+        """Fetch one memory by exact ID. Returns {id, text, metadata} or None."""
+        results = self.collections[collection_name].get(ids=[doc_id])
+        if not results["ids"]:
+            return None
+        return {
+            "id": results["ids"][0],
+            "text": results["documents"][0],
+            "metadata": results["metadatas"][0] or {},
+        }
+
     def delete(self, collection_name: str, doc_id: str):
         """Delete a memory by ID."""
         self.collections[collection_name].delete(ids=[doc_id])
@@ -177,11 +204,14 @@ class VectorStore:
             collection.delete(ids=results["ids"])
 
     def get_all(self, collection_name: str, limit: int = 100) -> list[dict]:
-        """Get all memories from a collection (up to limit)."""
+        """Get the newest `limit` memories from a collection, created_at descending.
+        Chroma's get(limit=N) returns insertion order (oldest first), which silently
+        drops the NEWEST entries — the dashboard showed a stale memory list for
+        weeks because of this. Fetch everything, sort, then cap."""
         collection = self.collections[collection_name]
         if collection.count() == 0:
             return []
-        results = collection.get(limit=min(limit, collection.count()))
+        results = collection.get()
         memories = []
         for i in range(len(results["ids"])):
             memories.append({
@@ -189,7 +219,8 @@ class VectorStore:
                 "text": results["documents"][i],
                 "metadata": results["metadatas"][i] or {},
             })
-        return memories
+        memories.sort(key=lambda m: m["metadata"].get("created_at", 0), reverse=True)
+        return memories[:limit]
 
     def count(self, collection_name: str) -> int:
         return self.collections[collection_name].count()

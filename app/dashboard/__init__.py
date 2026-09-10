@@ -3,7 +3,6 @@ Second Brain Dashboard — Quart app factory.
 """
 
 import os
-import subprocess
 import sys
 import io
 import re
@@ -11,7 +10,6 @@ import time
 import asyncio
 import logging
 import collections
-from pathlib import Path
 from quart import Quart
 
 from agent.core import AgentCore
@@ -157,36 +155,31 @@ def create_app():
         app.agent = AgentCore(
             enable_tools=True,
             session_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "memory", "data", "session_dashboard.json"),
+            threads=config.THREADS_MODE != "off",
         )
         await app.agent.start()
         app.vector_store = app.agent.memory.vector_store
         app.prune_task = asyncio.create_task(_prune_logs_loop())
         print("  [dashboard] Agent started")
 
-        # Start voice menu bar app as subprocess
-        voice_script = Path(__file__).parent.parent / "interfaces" / "voice.py"
-        venv_python = Path(__file__).parent.parent.parent / "venv" / "bin" / "python"
-        try:
-            app.voice_process = subprocess.Popen(
-                [str(venv_python), str(voice_script)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            print("  [dashboard] Voice app started")
-        except Exception as e:
-            app.voice_process = None
-            print(f"  [dashboard] Voice app failed to start: {e}")
+        # Trigger engine: webhook firings come in via routes/hooks.py; poll
+        # sources run in a background loop. Lives here because this is the
+        # always-on process with both the HTTP server and a running ToolRouter.
+        from trigger_engine import TriggerEngine
+        app.trigger_engine = TriggerEngine(agent=app.agent)
+        app.trigger_poll_task = asyncio.create_task(app.trigger_engine.poll_loop())
+
+        # The voice assistant is now a standalone, decoupled service
+        # (see ../voice_assistant). It is started independently and talks to
+        # the dashboard only over the /api/inference text endpoint.
 
     @app.after_serving
     async def shutdown():
         # Stop log pruning task
         if getattr(app, "prune_task", None):
             app.prune_task.cancel()
-
-        # Stop voice app
-        if getattr(app, "voice_process", None) and app.voice_process.poll() is None:
-            app.voice_process.terminate()
-            print("  [dashboard] Voice app stopped")
+        if getattr(app, "trigger_poll_task", None):
+            app.trigger_poll_task.cancel()
 
         await app.agent.shutdown()
         if hasattr(app, 'original_stdout'):
@@ -203,11 +196,16 @@ def create_app():
     from dashboard.routes.config_routes import config_bp
     from dashboard.routes.logs import logs_bp
     from dashboard.routes.costs import costs_bp
-    from dashboard.routes.watch import watch_bp
-    from dashboard.routes.voice import voice_bp
+    from dashboard.routes.gesture import gesture_bp
+    from dashboard.routes.inference import inference_bp
     from dashboard.routes.lights import lights_bp
     from dashboard.routes.dashboards import dashboards_bp, register_dashboard_apis
     from dashboard.routes.projects import projects_bp
+    from dashboard.routes.workflows import workflows_bp
+    from dashboard.routes.hooks import hooks_bp
+    from dashboard.routes.triggers import triggers_bp
+    from dashboard.routes.ingest import ingest_bp
+    from dashboard.routes.toolbus import toolbus_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(chat_bp)
@@ -218,11 +216,16 @@ def create_app():
     app.register_blueprint(config_bp)
     app.register_blueprint(logs_bp)
     app.register_blueprint(costs_bp)
-    app.register_blueprint(watch_bp)
-    app.register_blueprint(voice_bp)
+    app.register_blueprint(gesture_bp)
+    app.register_blueprint(inference_bp)
     app.register_blueprint(lights_bp)
     app.register_blueprint(dashboards_bp)
     app.register_blueprint(projects_bp)
+    app.register_blueprint(workflows_bp)
+    app.register_blueprint(hooks_bp)
+    app.register_blueprint(triggers_bp)
+    app.register_blueprint(ingest_bp)
+    app.register_blueprint(toolbus_bp)
 
     # Load API blueprints from clients/dashboards/*/api.py
     register_dashboard_apis(app)

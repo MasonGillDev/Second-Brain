@@ -5,3 +5,5 @@ python-telegram-bot>=21.0
 python-dotenv>=1.0.0
 quart>=0.20.0
 pycync>=0.5.0
+composio>=0.15.0
+samsungtvws>=3.0.0

@@ -63,6 +63,26 @@ class ToolRouter:
         self._clients.clear()
         self._tools.clear()
 
+    def all_tool_names(self) -> set[str]:
+        """
+        Every discovered tool name, including servers not currently activated.
+
+        The fake-action guard needs these: a model narrates `workflows__create_workflow`
+        precisely when the skill is dormant and the tool is absent from get_tools(),
+        so checking only the exposed set is blind to the case worth catching.
+        """
+        return {t["name"] for t in self._tools}
+
+    def get_all_tools(self) -> list[dict]:
+        """
+        Every discovered tool from every non-disabled server, with NO skill
+        gating. Used by the flat agent core (config.AGENT_CORE_MODE == "flat"),
+        which exposes the whole toolset at once instead of activating skills.
+        Excludes meta-tools — the flat core adds its own (just clear_chat_history).
+        """
+        return [t for t in self._tools
+                if t["name"].split("__")[0] not in self.disabled_servers]
+
     def get_tools(self) -> list[dict]:
         """
         Get tool definitions for always-on servers + activated skills.
@@ -81,34 +101,46 @@ class ToolRouter:
         return meta + skill_tools
 
     def get_meta_tools(self) -> list[dict]:
-        """Return the activate_skill meta-tool definition."""
-        manifest = getattr(config, "SKILL_MANIFEST", {})
-        if not manifest:
-            return []
-
-        # Only list skills that haven't been activated yet
-        available = [name for name in manifest if name not in self._activated_skills]
-        if not available:
-            return []
-
-        return [{
-            "name": "activate_skill",
+        """Return meta-tools handled in-process by the agent core (not real MCP
+        tools): always clear_chat_history, plus activate_skill when skills remain."""
+        metas = [{
+            "name": "clear_chat_history",
             "description": (
-                "Activate a skill to make its tools available for this conversation. "
-                "Call this before using tools from a skill."
+                "Clear the current conversation history — the recent messages and the "
+                "rolling summary. Use this ONLY when the user explicitly asks to clear, "
+                "reset, wipe, or start a fresh chat. It takes effect after your reply, so "
+                "the next message begins with an empty history. Long-term memories, "
+                "procedures, and project data are NOT affected."
             ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "skill_name": {
-                        "type": "string",
-                        "description": "Name of the skill to activate.",
-                        "enum": available,
-                    }
-                },
-                "required": ["skill_name"],
-            },
+            "input_schema": {"type": "object", "properties": {}},
         }]
+
+        manifest = getattr(config, "SKILL_MANIFEST", {})
+        # Only offer activate_skill for skills that haven't been activated yet.
+        # Always-on servers need no activation — their tools are already present.
+        always = set(getattr(config, "ALWAYS_INCLUDE_SERVERS", []))
+        available = [name for name in manifest
+                     if name not in self._activated_skills and name not in always]
+        if available:
+            metas.append({
+                "name": "activate_skill",
+                "description": (
+                    "Activate a skill to make its tools available for this conversation. "
+                    "Call this before using tools from a skill."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "Name of the skill to activate.",
+                            "enum": available,
+                        }
+                    },
+                    "required": ["skill_name"],
+                },
+            })
+        return metas
 
     def activate_skill(self, skill_name: str) -> str:
         """
@@ -144,14 +176,20 @@ class ToolRouter:
         self._activated_skills.clear()
 
     def get_skill_manifest_text(self) -> str:
-        """Build the skill manifest block for the system prompt."""
+        """Build the skill manifest block for the system prompt.
+        Always-on servers are excluded — their tools need no activation."""
         manifest = getattr(config, "SKILL_MANIFEST", {})
+        always = set(getattr(config, "ALWAYS_INCLUDE_SERVERS", []))
         if not manifest:
             return ""
 
         lines = []
         for name, desc in manifest.items():
+            if name in always:
+                continue
             lines.append(f"- **{name}**: {desc}")
+        if not lines:
+            return ""
         skills_text = "\n".join(lines)
 
         return f"""

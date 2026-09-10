@@ -1,0 +1,29 @@
+# Voice assistant service — install into ../voice-venv (Python 3.12).
+#   /opt/homebrew/bin/python3.12 -m venv voice-venv
+#   ./voice-venv/bin/pip install -r voice_assistant/requirements.txt
+#
+# Also requires the espeak-ng system binary (kokoro G2P fallback):
+#   brew install espeak-ng
+#
+# NOTE: kokoro requires Python >=3.10,<3.13 — it will NOT install on the main
+# dashboard venv (3.14). That separation is the whole reason this service has
+# its own venv.
+
+kokoro>=0.9.4
+soundfile
+mlx-whisper
+openwakeword
+# onnxruntime 1.27.0 silently breaks openWakeWord's melspectrogram model
+# (every wake score becomes 0.0). 1.26.0 is the highest working version.
+onnxruntime==1.26.0
+sounddevice
+numpy
+requests
+# speech-based utterance endpointing (replaces the raw RMS gate)
+silero-vad
+# speaker verification (ECAPA voice embeddings — only respond to the enrolled voice)
+speechbrain
+# pause/resume other audio during a conversation: AppleScript for Music/Spotify,
+# and the Play/Pause media key (via pyobjc) for browser/YouTube on macOS 26+.
+pyobjc-framework-Cocoa
+pyobjc-framework-Quartz

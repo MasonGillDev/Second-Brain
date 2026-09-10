@@ -42,7 +42,9 @@ async def get_config():
             "type": val_type,
             "readonly": key in READONLY_KEYS,
         }
-    return jsonify({"config": values})
+    # Curated model ids for the MODEL picker (frontend renders a datalist).
+    presets = [m for m in getattr(config, "MODEL_PRESETS", []) if isinstance(m, str)]
+    return jsonify({"config": values, "model_presets": presets})
 
 
 @config_bp.route("/api/config", methods=["PUT"])

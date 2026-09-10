@@ -51,10 +51,23 @@ def init_db():
             message   TEXT    NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS trigger_firings (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp    REAL NOT NULL,
+            trigger_name TEXT NOT NULL,
+            source       TEXT NOT NULL,      -- webhook | poll | test
+            status       TEXT NOT NULL,      -- fired | filtered | debounced | error
+            payload      TEXT,               -- JSON snapshot, truncated
+            result       TEXT,               -- action output or error text, truncated
+            duration_ms  INTEGER
+        );
+
         CREATE INDEX IF NOT EXISTS idx_api_calls_timestamp ON api_calls(timestamp);
         CREATE INDEX IF NOT EXISTS idx_api_calls_source ON api_calls(source);
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_source ON logs(source);
+        CREATE INDEX IF NOT EXISTS idx_trigger_firings_name ON trigger_firings(trigger_name);
+        CREATE INDEX IF NOT EXISTS idx_trigger_firings_ts ON trigger_firings(timestamp);
     """)
     # Migration: add `details` column for full, expandable log content
     # (full tool args + result, full agent replies). NULL for plain log lines.
@@ -67,6 +80,16 @@ def init_db():
     # connection (see project_store.py). Ensure they exist at startup too.
     import project_store
     project_store.init_projects_db()
+
+    # The internal calendar lives in the same DB file with its own connection
+    # (see calendar_store.py). Ensure its table exists at startup too.
+    import calendar_store
+    calendar_store.init_calendar_db()
+
+    # Ingest watcher devices live in the same DB file with their own connection
+    # (see device_store.py). Ensure the table exists at startup too.
+    import device_store
+    device_store.init_devices_db()
 
 
 # ---- Write operations ----
@@ -93,6 +116,47 @@ def log_message(level: str, source: str, message: str, details: str | None = Non
             (time.time(), level, source, message, details),
         )
         conn.commit()
+
+
+def log_trigger_firing(trigger_name: str, source: str, status: str,
+                       payload: str | None = None, result: str | None = None,
+                       duration_ms: int | None = None):
+    """Record one trigger firing attempt (fired/filtered/debounced/error)."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO trigger_firings (timestamp, trigger_name, source, status, payload, result, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (time.time(), trigger_name, source, status,
+             payload[:2000] if payload else None,
+             result[:2000] if result else None,
+             duration_ms),
+        )
+        conn.commit()
+
+
+def get_trigger_firings(trigger_name: str | None = None, limit: int = 100) -> list[dict]:
+    """Recent trigger firings, newest first, optionally for one trigger."""
+    conn = _get_conn()
+    if trigger_name:
+        rows = conn.execute(
+            "SELECT * FROM trigger_firings WHERE trigger_name = ? ORDER BY timestamp DESC LIMIT ?",
+            (trigger_name, limit)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trigger_firings ORDER BY timestamp DESC LIMIT ?",
+            (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_last_fired_map() -> dict[str, float]:
+    """Most recent successful firing time per trigger — seeds the engine's
+    debounce state so restarts can't defeat a long debounce window."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT trigger_name, MAX(timestamp) AS ts FROM trigger_firings "
+        "WHERE status = 'fired' GROUP BY trigger_name").fetchall()
+    return {r["trigger_name"]: r["ts"] for r in rows}
 
 
 def prune_logs(max_age_days: float) -> int:

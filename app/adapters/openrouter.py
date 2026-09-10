@@ -5,6 +5,7 @@ Translates between the provider-agnostic tool format and
 OpenRouter's OpenAI-compatible API for tool calls.
 """
 
+import asyncio
 import json
 import uuid
 import httpx
@@ -40,22 +41,61 @@ class OpenRouterAdapter(LLMAdapter):
             for tool in tools
         ]
 
-    async def chat(self, system: str, messages: list[dict], tools: list[dict] | None = None) -> AdapterResponse:
-        """Send a message to OpenRouter, returns an AdapterResponse."""
+    async def chat(self, system: str, messages: list[dict], tools: list[dict] | None = None,
+                   model: str | None = None) -> AdapterResponse:
+        """Send a message to OpenRouter, returns an AdapterResponse. `model`
+        overrides config.MODEL for this one call (used by per-step model picks)."""
         # Build messages with system prompt first
         api_messages = [{"role": "system", "content": system}] + messages
 
         payload = {
-            "model": config.MODEL,
+            "model": model or config.MODEL,
             "max_tokens": config.MAX_RESPONSE_TOKENS,
             "messages": api_messages,
+            # Ask OpenRouter for full usage accounting (cached tokens + real cost).
+            "usage": {"include": True},
         }
+        # Prefer providers with working prompt caching: a KV cache is
+        # provider-local, so OpenRouter's default load-balancing would land
+        # request N+1 on a different provider and miss the cache.
+        # Fallbacks stay enabled — availability beats cache savings.
+        # Pin the provider order for THIS model (pins are model-specific — see
+        # config.MODEL_PROVIDER_PINS). Falls back to the global order, then to
+        # default routing. Read fresh each call so a live MODEL switch retargets.
+        model_id = model or config.MODEL
+        pins = getattr(config, "MODEL_PROVIDER_PINS", {}) or {}
+        order = pins.get(model_id) or getattr(config, "OPENROUTER_PROVIDER_ORDER", None)
+        provider = {"order": order, "allow_fallbacks": True} if order else {}
         if tools:
             payload["tools"] = tools
+            # Some providers serve our model without tool-calling support. Ask
+            # OpenRouter to consider only providers honoring every parameter we
+            # send, so a pin or fallback can't land us somewhere that ignores
+            # `tools` and answers in prose instead of calling one.
+            provider["require_parameters"] = True
+        if provider:
+            payload["provider"] = provider
 
-        resp = await self._client.post("/chat/completions", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        # OpenRouter occasionally returns a 200 with a non-JSON body (gateway
+        # hiccups, more likely on large generations), which used to surface as a
+        # cryptic bare JSONDecodeError from resp.json(). Retry transient failures,
+        # then fail loudly with the actual response body so it's debuggable.
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = await self._client.post("/chat/completions", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except (httpx.HTTPError, json.JSONDecodeError) as e:
+                if attempt < 2:
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                body = resp.text[:300] if resp is not None else ""
+                raise RuntimeError(
+                    f"LLM request failed after 3 attempts ({type(e).__name__}: {e})"
+                    + (f" — response body: {body!r}" if body else "")
+                ) from e
 
         choice = data["choices"][0]
         message = choice["message"]
@@ -88,8 +128,9 @@ class OpenRouterAdapter(LLMAdapter):
                 arguments=args,
             ))
 
-        # Parse usage
+        # Parse usage (usage accounting adds cached-token detail + real cost)
         usage_data = data.get("usage", {})
+        prompt_details = usage_data.get("prompt_tokens_details") or {}
 
         return AdapterResponse(
             text=text,
@@ -99,6 +140,8 @@ class OpenRouterAdapter(LLMAdapter):
             usage=Usage(
                 input_tokens=usage_data.get("prompt_tokens", 0),
                 output_tokens=usage_data.get("completion_tokens", 0),
+                cached_input_tokens=prompt_details.get("cached_tokens", 0) or 0,
+                cost_usd=float(usage_data.get("cost") or 0.0),
             ),
         )
 
