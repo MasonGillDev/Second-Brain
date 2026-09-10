@@ -272,27 +272,100 @@ def position_app(app: str, screen=None, position="full", window_index: int = 1) 
     return result
 
 
-def open_app(app: str, screen=None, position=None, new_instance: bool = False) -> dict:
+# Apps that can make a window themselves. Preferred over a synthetic Cmd-N, which
+# silently does nothing when an app's File menu is shaped differently or a modal
+# has focus. Keyed by process name.
+_NEW_WINDOW_SCRIPTS = {
+    "Terminal":      'tell application "Terminal" to do script ""',
+    "iTerm2":        'tell application "iTerm" to create window with default profile',
+    "Finder":        'tell application "Finder" to make new Finder window',
+    "Safari":        'tell application "Safari" to make new document',
+    "Google Chrome": 'tell application "Google Chrome" to make new window',
+    "Notes":         'tell application "Notes" to make new note',
+    "TextEdit":      'tell application "TextEdit" to make new document',
+}
+
+
+def _window_count(process: str) -> int:
+    try:
+        return int(_osascript(
+            f'tell application "System Events" to count windows of process "{_escape(process)}"'
+        ))
+    except WindowError:
+        return 0
+
+
+def _spawn_window(process: str) -> None:
     """
-    Launch (or focus) an app, optionally placing its window.
+    Ask a running app for a new window, app-native route first, Cmd-N as fallback.
+
+    Raises if no new window appears, rather than letting the caller move the
+    existing one — silently reusing a window is exactly the bug this avoids.
+    """
+    before = _window_count(process)
+
+    script = _NEW_WINDOW_SCRIPTS.get(process)
+    if script:
+        try:
+            _osascript(script)
+        except WindowError:
+            script = None
+    if not script:
+        _osascript(
+            f'tell application "{_escape(process)}" to activate\n'
+            'delay 0.2\n'
+            'tell application "System Events" to keystroke "n" using command down'
+        )
+
+    for _ in range(40):
+        if _window_count(process) > before:
+            return
+        time.sleep(0.25)
+    raise WindowError(
+        f"'{process}' did not open a new window "
+        "(it may not support more than one, or it needs Automation permission)."
+    )
+
+
+def open_app(app: str, screen=None, position=None, new_window: bool = False,
+             new_instance: bool = False) -> dict:
+    """
+    Launch or focus an app, optionally placing a window.
 
     With no position the app just opens wherever macOS puts it. With one, we wait
     for the window to exist rather than sleeping a fixed amount — launch times
     range from Safari's instant to Ableton's many seconds.
+
+    new_window forces a fresh window when the app is already running. Without it,
+    `open -a` on a running app only focuses what's there, so placing repeatedly
+    would just shuffle one window around instead of tiling several.
     """
-    cmd = ["open", "-na" if new_instance else "-a", app]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0:
-        raise WindowError(proc.stderr.strip() or f"macOS could not launch '{app}'")
+    already_running = True
+    try:
+        process = resolve_app(app)
+    except WindowError:
+        already_running = False
+        process = None
+
+    spawned = False
+    if new_window and already_running:
+        _spawn_window(process)
+        spawned = True
+    else:
+        cmd = ["open", "-na" if new_instance else "-a", app]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            raise WindowError(proc.stderr.strip() or f"macOS could not launch '{app}'")
 
     if position is None and screen is None:
-        return {"app": app, "opened": True, "positioned": False}
+        return {"app": process or app, "opened": True, "positioned": False,
+                "new_window": spawned}
 
     scr = resolve_screen(screen)
     x, y, w, h = resolve_position(position, scr)
 
     # Give the app time to register a process before matching its name.
-    process, last_error = None, None
+    last_error = None
     for _ in range(40):
         try:
             process = resolve_app(app)
@@ -300,11 +373,13 @@ def open_app(app: str, screen=None, position=None, new_instance: bool = False) -
         except WindowError as e:
             last_error = e
             time.sleep(0.25)
-    if process is None:
+    else:
         raise WindowError(f"'{app}' opened but never showed a window: {last_error}")
 
+    # A newly created window comes to the front, so it is window 1.
     result = _place(process, x, y, w, h, wait=15.0)
     result.update({"app": process, "opened": True, "positioned": True,
+                   "new_window": spawned,
                    "screen": scr["index"], "screen_name": scr["name"],
                    "position": position or "full"})
     return result

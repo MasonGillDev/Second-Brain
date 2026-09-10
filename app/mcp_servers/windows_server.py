@@ -43,13 +43,19 @@ def open_app(
     app: str,
     screen: str = "",
     position: str = "",
+    new_window: bool = False,
     new_instance: bool = False,
 ) -> str:
     """
     Open (or focus) a Mac app, optionally placing its window on a specific display.
 
-    Use this when the app may not be running yet. If it is already open, use
-    position_app instead to avoid stealing focus.
+    Use this when the app may not be running yet. If it is already open and you
+    just want to move it, use position_app instead to avoid stealing focus.
+
+    To tile SEVERAL windows of the same app (e.g. four Terminals, one per corner),
+    call this once per window with new_window=True. Without that flag, opening an
+    app that is already running only focuses its existing window, so each call
+    would move that same window instead of making new ones.
 
     Args:
         app: App name as it appears in /Applications, e.g. "Safari", "Ableton Live 12".
@@ -59,21 +65,26 @@ def open_app(
         position: Where on that screen. A preset — one of: {presets} — or four
                   fractions "x,y,w,h" of the screen (e.g. "0.25,0,0.5,0.6").
                   Empty with no screen given means "open it, don't move it".
-        new_instance: Force a new instance instead of focusing the running one.
+        new_window: Make a NEW window instead of reusing the app's existing one.
+                    Required when tiling multiple windows of one app.
+        new_instance: Launch a second copy of the app entirely. Rarely wanted —
+                      prefer new_window.
     """
     try:
         result = _open_app(
             app,
             screen=screen or None,
             position=position or None,
+            new_window=new_window,
             new_instance=new_instance,
         )
     except WindowError as e:
         return f"Could not open '{app}': {e}"
 
+    verb = "Opened new window of" if result.get("new_window") else "Opened"
     if not result.get("positioned"):
-        return f"Opened {result['app']} (left it wherever macOS put it)."
-    return "Opened " + _describe(result)
+        return f"{verb} {result['app']} (left it wherever macOS put it)."
+    return f"{verb} " + _describe(result)
 
 
 
