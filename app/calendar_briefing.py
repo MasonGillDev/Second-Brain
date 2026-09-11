@@ -352,10 +352,14 @@ async def briefing_loop():
                 state["fingerprint"] = fp
                 state["planned_at"] = datetime.now()
                 summary = ", ".join(
-                    f"{s['event']} at {s['at']:%H:%M} (-{s['lead']}m)" for s in scheduled)
+                    f"{s['event']} at {s['at']:%H:%M}"
+                    + ("" if s["lead"] == 0 else f" (-{s['lead']}m)")
+                    for s in scheduled)
                 if summary != last_print:
-                    print(f"  [briefing] Planned {len(scheduled)} heads-up(s)"
-                          + (f": {summary}" if summary else ""))
+                    leads = sum(1 for s in scheduled if s["lead"])
+                    starts = len(scheduled) - leads
+                    print(f"  [briefing] Planned {starts} start notice(s) and "
+                          f"{leads} heads-up(s)" + (f": {summary}" if summary else ""))
                     last_print = summary
         except Exception as e:
             print(f"  [briefing] loop error: {type(e).__name__}: {e}")
