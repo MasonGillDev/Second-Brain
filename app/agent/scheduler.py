@@ -124,7 +124,14 @@ def _field_matches(field: str, value: int, min_val: int, max_val: int) -> bool:
 _ANNOUNCE_SYSTEM = (
     "You write a single short spoken notification. Follow the instruction using ONLY "
     "the context given. Respond with just the words to be spoken — no preamble, no "
-    "meta-commentary, no markdown."
+    "meta-commentary, no markdown.\n"
+    # This text goes straight to TTS, which reads "5:00 PM" as written. The same
+    # rule is in the voice interface prompt (agent/interface_prompts.py); it has
+    # to be repeated because announcements never go through the agent.
+    "Write times the way they are spoken: never a colon and never \":00\". On the "
+    "hour, drop the minutes — \"5 PM\", not \"5:00 PM\" and not \"five o'clock\". Off "
+    "the hour, write the minutes as a separate number — \"6 45 PM\", not \"6:45 PM\". "
+    "Say \"noon\" and \"midnight\" rather than \"12 PM\" / \"12 AM\"."
 )
 
 

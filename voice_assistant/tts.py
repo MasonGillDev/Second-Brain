@@ -11,6 +11,7 @@ import time
 import numpy as np
 
 from . import audio_out, config
+from .speech_text import normalize
 
 _pipeline = None
 # Pre-rendered audio for a small set of fixed confirmation phrases ("Paused.",
@@ -53,6 +54,7 @@ def synth(text: str) -> np.ndarray:
 
     Useful for tests / non-realtime callers. speak() is preferred for live use.
     """
+    text = normalize(text)
     pipeline = _get_pipeline()
     chunks = []
     for _, _, audio in pipeline(text, voice=config.TTS_VOICE, speed=config.TTS_SPEED):
@@ -64,7 +66,7 @@ def synth(text: str) -> np.ndarray:
 
 def speak(text: str) -> None:
     """Synthesize and play text, streaming chunk-by-chunk."""
-    text = (text or "").strip()
+    text = normalize((text or "").strip())
     if not text:
         return
     cached = _phrase_cache.get(text)
@@ -89,7 +91,7 @@ def speak_streaming(text: str, should_stop) -> bool:
     should_stop is polled between chunks and ~every 43ms during playback, so a
     barge-in stops the assistant mid-sentence.
     """
-    text = (text or "").strip()
+    text = normalize((text or "").strip())
     if not text:
         return False
     cached = _phrase_cache.get(text)
