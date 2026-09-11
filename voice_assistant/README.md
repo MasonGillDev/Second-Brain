@@ -84,6 +84,33 @@ The dashboard auth token is read from the macOS Keychain service `voice-api-key`
 First launch asks for **Microphone** permission (macOS). Say the wake word
 (default **"hey jarvis"**), wait for the beep, then speak. The reply is spoken back.
 
+### As a background service
+
+It normally runs as a launch agent, like the dashboard and scheduler, so it
+starts at login and restarts if it dies:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.masongill.secondbrain.voice.plist
+launchctl kickstart -k gui/$(id -u)/com.masongill.secondbrain.voice   # restart
+launchctl bootout   gui/$(id -u)/com.masongill.secondbrain.voice      # stop
+tail -f ~/Library/Logs/SecondBrain/voice.{out,err}.log
+```
+
+Two things matter in that plist and are easy to get wrong:
+
+* `PATH` must include `/opt/homebrew/bin` — kokoro shells out to `espeak-ng`.
+* `ProcessType` is `Interactive`, not `Background`. launchd throttles background
+  jobs, which drops audio frames.
+
+Microphone access is granted per-executable, so a service started by launchd is
+a different grant than one started from a terminal: the prompt attributes to
+`voice-venv/bin/python` rather than to Terminal. If the wake word stops
+responding after switching to the launch agent, check **System Settings >
+Privacy & Security > Microphone**.
+
+Startup is ~13s (Kokoro, Whisper, Silero, ECAPA, openWakeWord all load), and the
+agent's `ThrottleInterval` is 30s, so a crash takes ~45s to come back.
+
 ## Configuration
 
 All via environment variables (see `config.py`):
