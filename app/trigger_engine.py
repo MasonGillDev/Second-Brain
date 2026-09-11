@@ -170,7 +170,15 @@ class TriggerEngine:
         # holder: MCP client teardown (anyio) can leak a cancellation onto the
         # awaiting task AFTER process() already finished (see scheduler.run_task)
         # — the holder lets us keep the finished result even when that happens.
-        text = workflow_runner._interp(act["prompt"], variables)
+        return await self.run_prompt(workflow_runner._interp(act["prompt"], variables))
+
+    async def run_prompt(self, text: str, source: str = "trigger") -> str:
+        """Run one prompt through an isolated AgentCore and return its reply.
+
+        Public because the reply watcher (reply_watch.py) wakes the agent the same
+        way, and must share this lock — two AgentCores at once would each want
+        their own MCP fleet.
+        """
         async with self._prompt_lock:
             holder: dict = {}
 
@@ -184,7 +192,7 @@ class TriggerEngine:
                                   router=self._agent.router)
                 await agent.start()
                 try:
-                    holder["result"] = await agent.process(text, source="trigger")
+                    holder["result"] = await agent.process(text, source=source)
                 finally:
                     try:
                         await agent.shutdown()

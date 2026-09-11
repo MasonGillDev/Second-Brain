@@ -8,11 +8,11 @@ app/window_manager.py; this file only maps it to tools and phrases results.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
 
-from app.window_manager import (
+from window_manager import (
     PRESETS,
     WindowError,
     list_screens as _list_screens,

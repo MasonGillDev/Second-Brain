@@ -169,6 +169,14 @@ def create_app():
         app.trigger_engine = TriggerEngine(agent=app.agent)
         app.trigger_poll_task = asyncio.create_task(app.trigger_engine.poll_loop())
 
+        # Pending iMessage reply watches: when someone answers a question the
+        # agent texted them, wake the agent with the reply and the follow-up
+        # intent. Shares the trigger engine's prompt lock (one AgentCore at a
+        # time) by borrowing its run_prompt.
+        import reply_watch
+        app.reply_watch_task = asyncio.create_task(
+            reply_watch.watch_loop(app.trigger_engine.run_prompt))
+
         # The voice assistant is now a standalone, decoupled service
         # (see ../voice_assistant). It is started independently and talks to
         # the dashboard only over the /api/inference text endpoint.
@@ -180,6 +188,8 @@ def create_app():
             app.prune_task.cancel()
         if getattr(app, "trigger_poll_task", None):
             app.trigger_poll_task.cancel()
+        if getattr(app, "reply_watch_task", None):
+            app.reply_watch_task.cancel()
 
         await app.agent.shutdown()
         if hasattr(app, 'original_stdout'):

@@ -351,6 +351,14 @@ PUBLIC_BASE_URL = _os.environ.get("SECOND_BRAIN_PUBLIC_URL", "http://masons-mac-
 # trigger's own interval_seconds controls how often it actually fetches).
 TRIGGER_POLL_TICK_SECONDS = 15
 
+# Pending iMessage reply watches (see app/reply_watch.py). A watch waits for a
+# named contact to answer a question the agent asked, then wakes the agent with
+# the reply. SETTLE lets a burst of texts finish before acting — people send
+# "let me check" and the real answer a minute apart.
+REPLY_WATCH_POLL_SECONDS = 20
+REPLY_WATCH_SETTLE_SECONDS = 45
+REPLY_WATCH_EXPIRE_HOURS = 24
+
 # Max characters for the personality block (keeps system prompt lean)
 PERSONALITY_MAX_CHARS = 500
 

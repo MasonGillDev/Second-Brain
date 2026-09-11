@@ -10,17 +10,22 @@ Requires Full Disk Access for the running process.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp.server.fastmcp import FastMCP
 
-from app.imessage_store import (
+from imessage_store import (
     MessageError,
     conversations as _conversations,
     recent_messages as _recent,
     search as _search,
     send_message as _send,
     unread as _unread,
+)
+from reply_watch import (
+    cancel as _cancel_watch,
+    pending as _pending_watches,
+    send_and_watch as _send_and_watch,
 )
 
 mcp = FastMCP("imessage")
@@ -138,7 +143,8 @@ def list_conversations(count: int = 20) -> str:
 
 
 @mcp.tool()
-def send_message(to: str, text: str, confirm: bool = False) -> str:
+def send_message(to: str, text: str, confirm: bool = False,
+                 await_reply: bool = False, reply_intent: str = "") -> str:
     """
     Send an iMessage. Two steps: call once to preview, again to actually send.
 
@@ -156,9 +162,24 @@ def send_message(to: str, text: str, confirm: bool = False) -> str:
         text: The message body, exactly as it should be sent.
         confirm: False previews. True sends, and is only appropriate after the
                  user has seen and approved a preview.
+        await_reply: Keep watching the conversation after sending, and wake up
+                 when they answer. Use this whenever the message ASKS something
+                 whose answer you need to act on. The wait survives restarts and
+                 lasts up to a day, so it is fine if they take hours.
+        reply_intent: Required with await_reply — what to DO once they answer,
+                 written as an instruction to your future self, because you will
+                 have no memory of this conversation when it fires. Name the
+                 specific record to change, e.g. "update tonight's 7pm calendar
+                 event 'Dinner' with the restaurant she names".
     """
+    if await_reply and not reply_intent.strip():
+        return ("[ERROR] await_reply needs reply_intent — say what to do once they "
+                "answer (e.g. \"update tonight's Dinner event with the location\").")
     try:
-        result = _send(to, text, confirm=confirm)
+        if await_reply:
+            result = _send_and_watch(to, text, reply_intent, confirm=confirm)
+        else:
+            result = _send(to, text, confirm=confirm)
     except MessageError as e:
         return f"[ERROR] {e}"
 
@@ -167,14 +188,56 @@ def send_message(to: str, text: str, confirm: bool = False) -> str:
               ) if result["others"] else ""
 
     if not result["sent"]:
+        follow = f"\n  Then: {reply_intent}" if await_reply else ""
         return (
             "DRY RUN — nothing sent yet.\n"
             f"  To:   {result['name']}  <{result['handle']}>\n"
-            f"  Text: {result['text']}\n"
+            f"  Text: {result['text']}{follow}\n"
             "Show this to the user. If they approve, call again with confirm=true."
             + others
         )
-    return f"Sent to {result['name']} <{result['handle']}> via {result['service']}: {result['text']}"
+
+    sent = f"Sent to {result['name']} <{result['handle']}> via {result['service']}: {result['text']}"
+    watch = result.get("watch")
+    if watch:
+        sent += (f"\n\nWatching for {result['name']}'s reply (watch #{watch['id']}). "
+                 f"When they answer I'll be woken to: {watch['intent']}. "
+                 "Tell the user you'll handle it when she replies — do not wait here.")
+    return sent
+
+
+@mcp.tool()
+def list_pending_replies() -> str:
+    """
+    Show questions you texted that are still waiting on an answer.
+
+    Use this when the user asks what you're waiting on, or before texting the
+    same person the same question twice.
+    """
+    import time
+
+    watches = _pending_watches()
+    if not watches:
+        return "Not waiting on any replies."
+    lines = []
+    for w in watches:
+        waited = (time.time() - w["created_at"]) / 3600
+        left = (w["expires_at"] - time.time()) / 3600
+        status = "reply landed, settling" if w["first_reply_at"] else "no reply yet"
+        lines.append(
+            f"#{w['id']} {w['contact_name']} — asked {waited:.1f}h ago, {status}, "
+            f"expires in {left:.0f}h\n    Q: {w['question'][:100]}\n    Then: {w['intent'][:100]}")
+    return f"Waiting on {len(watches)} reply(ies):\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def cancel_pending_reply(watch_id: int) -> str:
+    """
+    Stop waiting on a reply. Use when the user answers it another way, or says
+    to drop it. Get the id from list_pending_replies.
+    """
+    return (f"Cancelled watch #{watch_id}." if _cancel_watch(watch_id)
+            else f"No pending watch #{watch_id} (already fired, expired, or cancelled).")
 
 
 if __name__ == "__main__":

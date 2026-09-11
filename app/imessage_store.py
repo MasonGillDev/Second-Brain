@@ -249,7 +249,13 @@ def find_handles(query: str, conn: sqlite3.Connection) -> tuple[list[str], str, 
 _BASE_SELECT = """
     SELECT m.ROWID, m.text, m.attributedBody, m.date, m.is_from_me, m.is_read,
            h.id AS handle, ch.ROWID AS chat_id, ch.display_name AS chat_name,
-           (SELECT COUNT(*) FROM chat_handle_join WHERE chat_id = ch.ROWID) AS members
+           (SELECT COUNT(*) FROM chat_handle_join WHERE chat_id = ch.ROWID) AS members,
+           -- Some inbound rows carry no handle_id. In a 1:1 thread the sender is
+           -- unambiguous anyway, so fall back to the chat's participant rather
+           -- than labelling a known person "Unknown".
+           (SELECT h2.id FROM chat_handle_join chj2
+             JOIN handle h2 ON h2.ROWID = chj2.handle_id
+             WHERE chj2.chat_id = ch.ROWID LIMIT 1) AS chat_handle
     FROM message m
     JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
     JOIN chat ch ON ch.ROWID = cmj.chat_id
@@ -386,11 +392,14 @@ def conversations(count: int = 20) -> list[dict]:
 
 def _row_to_message(row: sqlite3.Row) -> dict:
     is_group = row["members"] > 1
+    # Only trust the chat fallback in a 1:1 thread — in a group it would put the
+    # wrong name on the message.
+    handle = row["handle"] or (None if is_group else row["chat_handle"])
     return {
         "text": message_text(row),
         "date": format_date(row["date"]),
         "from_me": bool(row["is_from_me"]),
-        "sender": "Me" if row["is_from_me"] else display_name(row["handle"]),
+        "sender": "Me" if row["is_from_me"] else (display_name(handle) if handle else "Unknown"),
         "unread": not row["is_from_me"] and not row["is_read"],
         "chat": row["chat_name"] or ("Group" if is_group else None),
         "group": is_group,
