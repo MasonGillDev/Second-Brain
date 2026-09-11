@@ -72,6 +72,12 @@ def _volume_args(text: str) -> Optional[dict]:
     return {"level": n} if n is not None else None
 
 
+def _tv_volume_args(text: str) -> Optional[dict]:
+    """tv__tv_set_volume names the slot `volume`; music__set_volume names it `level`."""
+    n = _percent(text)
+    return {"volume": n} if n is not None else None
+
+
 def _brightness_args(text: str) -> Optional[dict]:
     n = _percent(text)
     return {"brightness": n} if n is not None else None
@@ -192,6 +198,49 @@ INTENTS: list[Intent] = [
         "turn off the tv", "tv off", "turn the tv off", "power off the tv",
         "shut off the tv", "turn off the television", "switch off the tv",
     ]),
+    # Playback control. Without these, ANY tv verb collapsed onto the nearest
+    # tv intent, which is power: "pause my tv" and even "resume the tv" both
+    # resolved to tv.off and cut the power mid-show.
+    Intent("tv.pause", "tv__tv_send_keys", confirm="Paused.", examples=[
+        "pause the tv", "pause my tv", "pause the television", "pause the show",
+        "pause the movie", "pause it", "pause what's playing on the tv",
+        "hold the tv", "freeze the tv", "pause netflix", "pause youtube",
+    ]),
+    Intent("tv.resume", "tv__tv_send_keys", confirm="Playing.", examples=[
+        "resume the tv", "unpause the tv", "resume the show", "play the tv",
+        "resume the movie", "un pause the tv", "start it again on the tv",
+        "keep playing the tv", "resume netflix", "resume youtube",
+    ]),
+    # Volume. "turn down the tv" sits lexically right next to "turn off the tv",
+    # so without these it matched tv.off ABOVE the 0.85 floor and cut the power
+    # when the user only wanted it quieter.
+    Intent("tv.volume_down", "tv__tv_send_keys", confirm="Turning it down.", examples=[
+        "turn down the tv", "turn the tv down", "lower the tv volume",
+        "turn the volume down on the tv", "make the tv quieter", "tv quieter",
+        "volume down on the tv", "too loud", "turn it down",
+    ]),
+    Intent("tv.volume_up", "tv__tv_send_keys", confirm="Turning it up.", examples=[
+        "turn up the tv", "turn the tv up", "raise the tv volume",
+        "turn the volume up on the tv", "make the tv louder", "tv louder",
+        "volume up on the tv", "too quiet", "turn it up",
+    ]),
+    Intent("tv.set_volume", "tv__tv_set_volume", extract=_tv_volume_args,
+           confirm="TV volume set to {volume}.", examples=[
+        "set the tv volume to 20", "set the tv to volume 30",
+        "change the tv volume to 15", "tv volume 25", "make the tv volume 40",
+    ]),
+    Intent("tv.rewind", "tv__tv_send_keys", confirm="Rewinding.", examples=[
+        "rewind the tv", "rewind the show", "rewind", "go back on the tv",
+        "skip back on the tv",
+    ]),
+    Intent("tv.fast_forward", "tv__tv_send_keys", confirm="Fast forwarding.", examples=[
+        "fast forward the tv", "fast forward the show", "fast forward",
+        "skip ahead on the tv", "skip forward on the tv",
+    ]),
+    Intent("tv.stop", "tv__tv_send_keys", confirm="Stopped.", examples=[
+        "stop the tv", "stop the show", "stop playback on the tv",
+        "stop what's playing on the tv", "stop the movie",
+    ]),
     # KEY_MUTE is a toggle — mute and unmute send the same key. Separate intents
     # only so the spoken confirmation matches what you asked; the action is one
     # and the same, so a mute/unmute mix-up by the embedder is harmless.
@@ -211,6 +260,14 @@ _FIXED_ARGS: dict[str, dict] = {
     "lights.off": {"on": False},
     "tv.on": {"on": True},
     "tv.off": {"on": False},
+    "tv.pause": {"keys": "pause"},
+    # Three steps per command: one notch is imperceptible when asked out loud.
+    "tv.volume_down": {"keys": "volume_down volume_down volume_down"},
+    "tv.volume_up": {"keys": "volume_up volume_up volume_up"},
+    "tv.rewind": {"keys": "rewind"},
+    "tv.fast_forward": {"keys": "fast_forward"},
+    "tv.resume": {"keys": "play"},
+    "tv.stop": {"keys": "stop"},
     "tv.mute": {"keys": "mute"},
     "tv.unmute": {"keys": "mute"},  # KEY_MUTE toggles; same key as mute
 }
@@ -227,7 +284,23 @@ DECOYS: list[str] = [
     "what is the volume", "how loud is it", "what's on tv", "what's on the tv",
     "how many lights do i have", "which lights are on",
     "turn left at the light", "play by play of the game", "what's the score",
+    # TV asks that need real reasoning or a tool the fast path doesn't cover —
+    # without these they land on whatever tv intent is nearest.
+    "cast to the tv", "sleep the tv in 10 minutes", "set a sleep timer on the tv",
+    "turn the tv to hdmi 2", "change the input on the tv", "what's on netflix",
+    "put on the news", "skip the intro", "dim the tv",
 ]
+
+# Intents that are costly to get wrong need a stronger match than "nearest
+# neighbour wins". Cutting power mid-show, or killing every light, is not
+# something to do on a 0.70 guess — "pause my tv" matched tv.off at 0.703 while
+# a real "turn off the tv" scores 1.0, so there is plenty of room. Below the
+# floor these fall through to the LLM, which can ask or pick a better tool.
+HIGH_CONFIDENCE_INTENTS: dict[str, float] = {
+    "tv.off": 0.85,
+    "tv.on": 0.85,
+    "lights.off": 0.85,
+}
 
 _BY_ID = {i.id: i for i in INTENTS}
 
@@ -323,6 +396,11 @@ class IntentRouter:
 
         intent = _BY_ID.get(intent_id)
         if intent is None or relevance < float(getattr(config, "FAST_INTENT_THRESHOLD", 0.62)):
+            return None
+        floor = HIGH_CONFIDENCE_INTENTS.get(intent.id)
+        if floor is not None and relevance < floor:
+            print(f"  [intent] '{text}' matched {intent.id} at {relevance:.3f} but that "
+                  f"intent needs {floor} — deferring to the LLM")
             return None
 
         args = intent.build_args(text)
