@@ -20,6 +20,7 @@ import glob
 import os
 import re
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
@@ -394,3 +395,103 @@ def _row_to_message(row: sqlite3.Row) -> dict:
         "chat": row["chat_name"] or ("Group" if is_group else None),
         "group": is_group,
     }
+
+
+# --------------------------------------------------------------------------
+# sending
+# --------------------------------------------------------------------------
+
+# Sending goes through Messages.app via AppleScript — there is no writable API for
+# chat.db, and writing to it directly would corrupt the store. Requires Automation
+# permission for Messages in System Settings > Privacy & Security.
+_SEND_SCRIPT = """
+on run {targetHandle, messageText}
+  tell application "Messages"
+    try
+      set svc to 1st account whose service type = iMessage
+      send messageText to participant targetHandle of svc
+      return "iMessage"
+    on error errMsg
+      try
+        set svc to 1st account whose service type = SMS
+        send messageText to participant targetHandle of svc
+        return "SMS"
+      on error smsErr
+        error "iMessage: " & errMsg & " / SMS: " & smsErr
+      end try
+    end try
+  end tell
+end run
+"""
+
+
+def _best_handle(handles: list[str], conn: sqlite3.Connection) -> str:
+    """
+    Pick which of a contact's handles to text.
+
+    Someone can have a phone number and two email addresses; the right one is
+    whichever you actually have a running conversation on.
+    """
+    if len(handles) == 1:
+        return handles[0]
+    ranked = []
+    for handle in handles:
+        row = conn.execute("""
+            SELECT MAX(m.date) mx FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat_handle_join chj ON chj.chat_id = cmj.chat_id
+            JOIN handle h ON h.ROWID = chj.handle_id
+            WHERE h.id = ?
+              AND (SELECT COUNT(*) FROM chat_handle_join WHERE chat_id = cmj.chat_id) = 1
+        """, (handle,)).fetchone()
+        # Prefer a phone number when nothing distinguishes them by recency.
+        ranked.append((-(row["mx"] or 0), "@" in handle, handle))
+    return sorted(ranked)[0][2]
+
+
+def resolve_recipient(to: str) -> dict:
+    """Work out exactly who a send would go to, without sending anything."""
+    conn = _chat_db()
+    try:
+        handles, name, others = find_handles(to, conn)
+        if not handles:
+            raise MessageError(
+                f"No contact or conversation found for '{to}'. Use a contact name as "
+                "it appears in Contacts, or a full phone number/email."
+            )
+        return {"handle": _best_handle(handles, conn), "name": name or to,
+                "others": others}
+    finally:
+        conn.close()
+
+
+def send_message(to: str, text: str, confirm: bool = False) -> dict:
+    """
+    Send an iMessage. Without confirm=True this only previews the resolved
+    recipient and sends nothing.
+
+    The preview step exists because contact resolution is fuzzy: "char" matches
+    five people here, and an unconfirmed send to the wrong one is not recallable.
+    """
+    if not text or not text.strip():
+        raise MessageError("Message text is empty.")
+
+    target = resolve_recipient(to)
+    if not confirm:
+        return {**target, "sent": False, "text": text}
+
+    proc = subprocess.run(
+        ["osascript", "-", target["handle"], text],
+        input=_SEND_SCRIPT, capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()
+        if "Not authorized" in detail or "-1743" in detail:
+            raise MessageError(
+                "Not authorized to control Messages. Enable it in System Settings > "
+                "Privacy & Security > Automation for this process."
+            )
+        raise MessageError(f"Send failed: {detail}")
+
+    return {**target, "sent": True, "text": text,
+            "service": proc.stdout.strip() or "iMessage"}

@@ -19,6 +19,7 @@ from app.imessage_store import (
     conversations as _conversations,
     recent_messages as _recent,
     search as _search,
+    send_message as _send,
     unread as _unread,
 )
 
@@ -134,6 +135,46 @@ def list_conversations(count: int = 20) -> str:
         + (" (group)" if t["group"] else "")
         for t in threads
     )
+
+
+@mcp.tool()
+def send_message(to: str, text: str, confirm: bool = False) -> str:
+    """
+    Send an iMessage. Two steps: call once to preview, again to actually send.
+
+    Contact names are fuzzy — several people can match one name — and a text sent
+    to the wrong person cannot be recalled. So the first call ALWAYS returns a
+    preview showing exactly who it resolved to, and sends nothing. Show that
+    preview to the user, get their agreement, then call again with confirm=true.
+
+    Never pass confirm=true on the first call, and never pass it without the user
+    having seen the resolved recipient.
+
+    Args:
+        to: Who to text. A contact NAME as in Contacts ("Char", "Mom"), or a phone
+            number or email.
+        text: The message body, exactly as it should be sent.
+        confirm: False previews. True sends, and is only appropriate after the
+                 user has seen and approved a preview.
+    """
+    try:
+        result = _send(to, text, confirm=confirm)
+    except MessageError as e:
+        return f"[ERROR] {e}"
+
+    others = (f"\n\nHeads up — '{to}' also matched: {', '.join(result['others'])}. "
+              "Confirm this is the right person before sending."
+              ) if result["others"] else ""
+
+    if not result["sent"]:
+        return (
+            "DRY RUN — nothing sent yet.\n"
+            f"  To:   {result['name']}  <{result['handle']}>\n"
+            f"  Text: {result['text']}\n"
+            "Show this to the user. If they approve, call again with confirm=true."
+            + others
+        )
+    return f"Sent to {result['name']} <{result['handle']}> via {result['service']}: {result['text']}"
 
 
 if __name__ == "__main__":
