@@ -124,6 +124,13 @@ class Intent:
         return self.extract(text)
 
     def confirmation(self, args: dict, result: str) -> str:
+        # A canned confirmation must never paper over a failed call. The fast
+        # path skips the LLM entirely, so nothing else looks at the result —
+        # without this, "pause my tv" says "Paused." to a TV that is unplugged.
+        text = (result or "").strip()
+        if text.startswith("[ERROR]") or text.startswith("Error"):
+            detail = text.removeprefix("[ERROR]").removeprefix("Error:").strip()
+            return f"That didn't work — {detail[:160]}"
         if self.confirm is not None:
             try:
                 return self.confirm.format(**args)
