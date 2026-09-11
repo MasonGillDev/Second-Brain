@@ -141,7 +141,11 @@ def _new_messages(watch: dict) -> list[dict]:
                     WHERE chat_id = cmj.chat_id) = 1
             ORDER BY m.date
         """, [watch["after_rowid"]] + handles).fetchall()
-        return [imessage_store._row_to_message(r) for r in rows]
+        messages = [imessage_store._row_to_message(r) for r in rows]
+        # Texting your own number files a *received* copy of the outgoing message
+        # (is_from_me=0), which would otherwise be read back as part of the reply.
+        question = (watch["question"] or "").strip()
+        return [m for m in messages if m["text"].strip() != question]
     finally:
         conn.close()
 

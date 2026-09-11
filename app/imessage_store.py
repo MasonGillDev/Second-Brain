@@ -131,6 +131,23 @@ def normalize_handle(handle: str) -> str:
     return digits[-10:] if len(digits) >= 10 else digits
 
 
+def _name_score(name: str) -> tuple:
+    """
+    Rank competing names for the same handle.
+
+    Duplicate and auto-created cards are common, and several can claim one
+    number. Ranking by length alone picks junk: a card literally named "714-41"
+    beat "ME" for the owner's own number. A name with letters always wins over a
+    digit string; then more name parts; then longer.
+    """
+    if not name:
+        return (-1, 0, 0)
+    letters = sum(c.isalpha() for c in name)
+    digits = sum(c.isdigit() for c in name)
+    looks_numeric = letters == 0 or digits > letters
+    return (0 if looks_numeric else 1, len(name.split()), len(name))
+
+
 def load_contacts(refresh: bool = False) -> dict[str, str]:
     """Map normalized handle -> display name, from every Contacts source."""
     global _contacts_cache
@@ -156,8 +173,7 @@ def load_contacts(refresh: bool = False) -> dict[str, str]:
                     name = " ".join(p for p in (row["first"], row["last"]) if p).strip()
                     name = name or (row["org"] or "").strip()
                     key = normalize_handle(row["handle"])
-                    # Longer names are usually the fuller record of the same person.
-                    if name and key and len(name) > len(contacts.get(key, "")):
+                    if name and key and _name_score(name) > _name_score(contacts.get(key, "")):
                         contacts[key] = name
         except sqlite3.OperationalError:
             continue
