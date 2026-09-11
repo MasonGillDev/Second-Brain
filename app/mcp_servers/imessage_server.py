@@ -1,231 +1,139 @@
 """
 iMessage MCP Server.
 
-Read-only access to iMessage history via the local chat.db SQLite database.
-Requires Full Disk Access for the Python process in System Settings > Privacy & Security.
+Read-only access to iMessage history. All database work lives in
+app/imessage_store.py; this file only maps it to tools and phrases results.
 
-Tools:
-  - get_recent_messages: Last N messages from a contact or all contacts
-  - search_messages: Search message history by keyword
-  - get_unread_messages: Get all unread incoming messages
+Requires Full Disk Access for the running process.
 """
 
-import sys
 import os
-import sqlite3
-from datetime import datetime, timezone, timedelta
+import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from mcp.server.fastmcp import FastMCP
 
+from app.imessage_store import (
+    MessageError,
+    conversations as _conversations,
+    recent_messages as _recent,
+    search as _search,
+    unread as _unread,
+)
+
 mcp = FastMCP("imessage")
 
-# iMessage database path
-CHAT_DB = os.path.expanduser("~/Library/Messages/chat.db")
 
-# Apple epoch: 2001-01-01 00:00:00 UTC
-# iMessage dates are nanoseconds since this epoch
-APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
-
-
-def _get_connection() -> sqlite3.Connection:
-    """Get a read-only connection to chat.db."""
-    if not os.path.exists(CHAT_DB):
-        raise FileNotFoundError(f"iMessage database not found at {CHAT_DB}")
-    conn = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def _apple_date_to_str(apple_date: int | None) -> str:
-    """Convert Apple nanosecond timestamp to readable string."""
-    if not apple_date:
-        return "unknown"
-    try:
-        # iMessage dates are nanoseconds since 2001-01-01
-        seconds = apple_date / 1_000_000_000
-        dt = APPLE_EPOCH + timedelta(seconds=seconds)
-        return dt.astimezone().strftime("%Y-%m-%d %I:%M %p")
-    except (ValueError, OverflowError):
-        return "unknown"
-
-
-def _format_messages(rows) -> str:
-    """Format message rows into readable text."""
-    if not rows:
-        return "No messages found."
-
+def _render(messages: list[dict], show_chat: bool = False) -> str:
     lines = []
-    for row in rows:
-        direction = "Me" if row["is_from_me"] else (row["contact"] or "Unknown")
-        date = _apple_date_to_str(row["date"])
-        text = row["text"] or "(attachment)"
-        read_status = "" if row["is_from_me"] else (" [unread]" if not row["is_read"] else "")
-        lines.append(f"[{date}] {direction}: {text}{read_status}")
-
+    for m in messages:
+        prefix = f"[{m['date']}] "
+        if show_chat and m.get("chat"):
+            prefix += f"({m['chat']}) "
+        flag = " [unread]" if m["unread"] else ""
+        lines.append(f"{prefix}{m['sender']}: {m['text']}{flag}")
     return "\n".join(lines)
 
 
+def _also_matched(others: list[str]) -> str:
+    """Name resolution is ambiguous by nature — say who else matched."""
+    return f"\n\n(Also matched: {', '.join(others)}. Ask for one by name to see theirs.)" if others else ""
+
+
 @mcp.tool()
-def get_recent_messages(contact: str = "", count: int = 20) -> str:
+def get_recent_messages(contact: str = "", count: int = 20,
+                        include_groups: bool = False) -> str:
     """
-    Get recent messages, optionally filtered by contact.
+    Get the most recent messages, optionally with one contact.
+
+    Shows both sides of the conversation — yours and theirs.
 
     Args:
-        contact: Phone number or email to filter by (e.g., "+1234567890", "name@email.com").
-                 Leave empty to get messages from all contacts.
-        count: Number of messages to return (default 20, max 100).
+        contact: Who to read. A contact NAME as it appears in Contacts ("Char",
+                 "Mom"), or a phone number or email. Names are matched against
+                 Contacts, so partial names work; if several people match, the one
+                 you've messaged most recently wins and the rest are listed.
+                 Leave empty for recent messages across all conversations.
+        count: How many messages to return (default 20, max 100).
+        include_groups: Also include group threads this person is in. Off by
+                        default so a name gives you the one-on-one conversation.
     """
     count = min(max(count, 1), 100)
-
     try:
-        conn = _get_connection()
-
-        if contact:
-            rows = conn.execute("""
-                SELECT
-                    m.text,
-                    m.date,
-                    m.is_from_me,
-                    m.is_read,
-                    h.id as contact
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                WHERE h.id LIKE ?
-                ORDER BY m.date DESC
-                LIMIT ?
-            """, (f"%{contact}%", count)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT
-                    m.text,
-                    m.date,
-                    m.is_from_me,
-                    m.is_read,
-                    h.id as contact
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                ORDER BY m.date DESC
-                LIMIT ?
-            """, (count,)).fetchall()
-
-        conn.close()
-
-        # Reverse so oldest first
-        rows = list(reversed(rows))
-        header = f"Recent messages{' with ' + contact if contact else ''} ({len(rows)}):\n"
-        return header + _format_messages(rows)
-
-    except FileNotFoundError as e:
+        result = _recent(contact, count, include_groups)
+    except MessageError as e:
         return f"[ERROR] {e}"
-    except sqlite3.OperationalError as e:
-        if "unable to open" in str(e):
-            return "[ERROR] Permission denied. Grant Full Disk Access to your terminal/Python in System Settings > Privacy & Security."
-        return f"[ERROR] Database error: {e}"
-    except Exception as e:
-        return f"[ERROR] {e}"
+
+    if not result["messages"]:
+        return f"No messages found{' with ' + contact if contact else ''}."
+
+    who = f" with {result['name']}" if result["name"] else ""
+    header = f"Last {len(result['messages'])} messages{who}:\n"
+    return header + _render(result["messages"], show_chat=include_groups) + _also_matched(result["others"])
 
 
 @mcp.tool()
 def search_messages(query: str, contact: str = "", count: int = 20) -> str:
     """
-    Search message history by keyword.
+    Search message history for a keyword.
 
     Args:
-        query: Text to search for in messages.
-        contact: Optional phone number or email to narrow the search.
-        count: Max results to return (default 20, max 100).
+        query: Text to look for.
+        contact: Optional contact name, phone number or email to narrow the search.
+        count: Max results (default 20, max 100).
     """
     count = min(max(count, 1), 100)
-
     try:
-        conn = _get_connection()
-
-        if contact:
-            rows = conn.execute("""
-                SELECT
-                    m.text,
-                    m.date,
-                    m.is_from_me,
-                    m.is_read,
-                    h.id as contact
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                WHERE m.text LIKE ? AND h.id LIKE ?
-                ORDER BY m.date DESC
-                LIMIT ?
-            """, (f"%{query}%", f"%{contact}%", count)).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT
-                    m.text,
-                    m.date,
-                    m.is_from_me,
-                    m.is_read,
-                    h.id as contact
-                FROM message m
-                LEFT JOIN handle h ON m.handle_id = h.ROWID
-                WHERE m.text LIKE ?
-                ORDER BY m.date DESC
-                LIMIT ?
-            """, (f"%{query}%", count)).fetchall()
-
-        conn.close()
-
-        rows = list(reversed(rows))
-        header = f"Search results for '{query}'{' with ' + contact if contact else ''} ({len(rows)}):\n"
-        return header + _format_messages(rows)
-
-    except FileNotFoundError as e:
+        result = _search(query, contact, count)
+    except MessageError as e:
         return f"[ERROR] {e}"
-    except sqlite3.OperationalError as e:
-        if "unable to open" in str(e):
-            return "[ERROR] Permission denied. Grant Full Disk Access to your terminal/Python in System Settings > Privacy & Security."
-        return f"[ERROR] Database error: {e}"
-    except Exception as e:
-        return f"[ERROR] {e}"
+
+    if not result["messages"]:
+        who = f" with {result['name'] or contact}" if contact else ""
+        return f"No messages matching '{query}'{who}."
+
+    who = f" with {result['name']}" if result["name"] else ""
+    header = f"{len(result['messages'])} matches for '{query}'{who}:\n"
+    return header + _render(result["messages"], show_chat=True) + _also_matched(result["others"])
 
 
 @mcp.tool()
 def get_unread_messages() -> str:
-    """
-    Get all unread incoming messages. Only shows messages from others (not your own sent messages).
-    """
+    """Get unread incoming messages across all conversations."""
     try:
-        conn = _get_connection()
-
-        rows = conn.execute("""
-            SELECT
-                m.text,
-                m.date,
-                m.is_from_me,
-                m.is_read,
-                h.id as contact
-            FROM message m
-            LEFT JOIN handle h ON m.handle_id = h.ROWID
-            WHERE m.is_read = 0 AND m.is_from_me = 0 AND m.text IS NOT NULL
-            ORDER BY m.date DESC
-            LIMIT 50
-        """).fetchall()
-
-        conn.close()
-
-        rows = list(reversed(rows))
-
-        if not rows:
-            return "No unread messages."
-
-        return f"Unread messages ({len(rows)}):\n" + _format_messages(rows)
-
-    except FileNotFoundError as e:
+        messages = _unread()
+    except MessageError as e:
         return f"[ERROR] {e}"
-    except sqlite3.OperationalError as e:
-        if "unable to open" in str(e):
-            return "[ERROR] Permission denied. Grant Full Disk Access to your terminal/Python in System Settings > Privacy & Security."
-        return f"[ERROR] Database error: {e}"
-    except Exception as e:
+    if not messages:
+        return "No unread messages."
+    return f"{len(messages)} unread:\n" + _render(messages, show_chat=True)
+
+
+@mcp.tool()
+def list_conversations(count: int = 20) -> str:
+    """
+    List the most recently active conversations, newest first.
+
+    Use this to see who has been texting, or to find the exact contact name to
+    pass to get_recent_messages.
+
+    Args:
+        count: How many threads to list (default 20, max 100).
+    """
+    count = min(max(count, 1), 100)
+    try:
+        threads = _conversations(count)
+    except MessageError as e:
         return f"[ERROR] {e}"
+    if not threads:
+        return "No conversations found."
+    return "\n".join(
+        f"{t['name']} — {t['date']}"
+        + (f" [{t['unread']} unread]" if t["unread"] else "")
+        + (" (group)" if t["group"] else "")
+        for t in threads
+    )
 
 
 if __name__ == "__main__":
