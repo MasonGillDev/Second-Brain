@@ -44,7 +44,13 @@ CHECK_SECONDS = getattr(config, "BRIEFING_CHECK_SECONDS", 300)
 MAX_PLAN_AGE_HOURS = getattr(config, "BRIEFING_MAX_PLAN_AGE_HOURS", 6)
 # Scheduler tasks this module owns. Distinct from calendar_store's "cal_evt_"
 # so the two never clobber each other.
-TASK_PREFIX = "cal_brief_"
+TASK_PREFIX = "cal_brief_"     # advance heads-up, lead time chosen by the planner
+START_PREFIX = "cal_start_"    # "it's time" notice, fired at the event's start
+
+# Every timed event gets the at-start notice — that one is "it's time", not
+# advice, so it isn't the planner's call. All-day events are excluded: there is
+# no moment for them to start at. Set False to only ever hear planned heads-ups.
+ANNOUNCE_AT_START = getattr(config, "BRIEFING_ANNOUNCE_AT_START", True)
 
 _plan_lock = threading.Lock()
 
@@ -195,34 +201,98 @@ something that still makes sense at the actual current time (or that they're
 already due) rather than telling them to start getting ready."""
 
 
+def start_announcement_prompt(event: dict) -> str:
+    """The "it's time" notification, fired at the event's start."""
+    start = datetime.strptime(event["start_at"], cs._FMT)
+    return f"""Tell the user that something on their calendar is starting right now.
+
+Event: "{event['title']}"
+Starts: {start:%A %-I:%M %p} — that is NOW
+{f"Location: {event['location']}" if event['location'] else ""}
+{f"Notes on the event: {event['notes']}" if event['notes'] else ""}
+
+{_day_context(event)}
+
+This is the "it's time" nudge, not a preview — they were already told it was
+coming. Keep it to one short sentence. Say what is starting and the single most
+useful detail with it (where to be, what follows it, what to bring). Do not
+recite the calendar entry or repeat advice about getting ready.
+
+Conversational, spoken aloud, no preamble.
+
+IMPORTANT: check the current time. If this is firing noticeably late, say it
+started at its time rather than that it is starting now."""
+
+
+def _event_id_from_task(name: str) -> int | None:
+    for prefix in (TASK_PREFIX, START_PREFIX):
+        if name.startswith(prefix):
+            try:
+                return int(name[len(prefix):].split("_")[0])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
 def clear_planned(event_ids: set[int] | None = None):
     """Drop this module's not-yet-fired tasks so a re-plan is idempotent."""
     with cs._sched_lock:
         tasks = cs._load_sched()
         kept = []
         for t in tasks:
-            name = t.get("name", "")
-            if not name.startswith(TASK_PREFIX):
+            event_id = _event_id_from_task(t.get("name", ""))
+            if event_id is None:                      # not ours — never touch it
                 kept.append(t)
-                continue
-            if event_ids is not None:
-                try:
-                    if int(name[len(TASK_PREFIX):].split("_")[0]) not in event_ids:
-                        kept.append(t)
-                        continue
-                except (ValueError, IndexError):
-                    pass
+            elif event_ids is not None and event_id not in event_ids:
+                kept.append(t)
         if len(kept) != len(tasks):
             cs._save_sched(kept)
         return len(tasks) - len(kept)
 
 
-def apply_plan(decisions: list[dict]) -> list[dict]:
+def _write_task(name: str, prompt: str, fire: datetime) -> None:
+    task = {
+        "id": uuid.uuid4().hex[:8],
+        "name": name,
+        "prompt": prompt,
+        "schedule": f"{fire.minute} {fire.hour} {fire.day} {fire.month} *",
+        "notify_telegram": True,
+        "sinks": ["voice", "telegram"],
+        # Phrasing only — no tools needed (see scheduler._announce).
+        "tools": False,
+        "enabled": True,
+        "created_at": datetime.now().isoformat(),
+        "last_run": None,
+    }
+    with cs._sched_lock:
+        tasks = cs._load_sched()
+        tasks = [t for t in tasks if t.get("name") != name]
+        tasks.append(task)
+        cs._save_sched(tasks)
+
+
+def apply_plan(decisions: list[dict], events: list[dict] | None = None) -> list[dict]:
     """Write one-time scheduler tasks for each decision. Returns what was scheduled."""
     now = datetime.now()
     scheduled = []
+    events = upcoming() if events is None else events
 
-    clear_planned({d["event"]["id"] for d in decisions} | _planned_event_ids())
+    clear_planned({d["event"]["id"] for d in decisions}
+                  | {e["id"] for e in events} | _planned_event_ids())
+
+    # "It's time" notices: every timed event, independent of the planner. An
+    # event nobody set a reminder on and the planner declined to preview still
+    # has to tell you when it starts.
+    if ANNOUNCE_AT_START:
+        for ev in events:
+            if ev["all_day"]:
+                continue
+            start = datetime.strptime(ev["start_at"], cs._FMT)
+            if start <= now:
+                continue
+            _write_task(f"{START_PREFIX}{ev['id']}", start_announcement_prompt(ev), start)
+            scheduled.append({"event": ev["title"], "at": start, "lead": 0,
+                              "reason": "starting now"})
 
     for d in decisions:
         ev, lead = d["event"], d["lead_minutes"]
@@ -232,24 +302,8 @@ def apply_plan(decisions: list[dict]) -> list[dict]:
         if fire <= now:
             continue
 
-        task = {
-            "id": uuid.uuid4().hex[:8],
-            "name": f"{TASK_PREFIX}{ev['id']}_{lead}",
-            "prompt": announcement_prompt(ev, lead, d["reason"], fire),
-            "schedule": f"{fire.minute} {fire.hour} {fire.day} {fire.month} *",
-            "notify_telegram": True,
-            "sinks": ["voice", "telegram"],
-            # Phrasing only — no tools needed (see scheduler._announce).
-            "tools": False,
-            "enabled": True,
-            "created_at": now.isoformat(),
-            "last_run": None,
-        }
-        with cs._sched_lock:
-            tasks = cs._load_sched()
-            tasks = [t for t in tasks if t.get("name") != task["name"]]
-            tasks.append(task)
-            cs._save_sched(tasks)
+        _write_task(f"{TASK_PREFIX}{ev['id']}_{lead}",
+                    announcement_prompt(ev, lead, d["reason"], fire), fire)
         scheduled.append({"event": ev["title"], "at": fire, "lead": lead,
                           "reason": d["reason"]})
     return scheduled
@@ -258,12 +312,9 @@ def apply_plan(decisions: list[dict]) -> list[dict]:
 def _planned_event_ids() -> set[int]:
     ids = set()
     for t in cs._load_sched():
-        name = t.get("name", "")
-        if name.startswith(TASK_PREFIX):
-            try:
-                ids.add(int(name[len(TASK_PREFIX):].split("_")[0]))
-            except (ValueError, IndexError):
-                pass
+        event_id = _event_id_from_task(t.get("name", ""))
+        if event_id is not None:
+            ids.add(event_id)
     return ids
 
 
@@ -274,7 +325,7 @@ async def plan_now() -> list[dict]:
         clear_planned()
         return []
     decisions = await decide(events)
-    return apply_plan(decisions)
+    return apply_plan(decisions, events)
 
 
 async def briefing_loop():

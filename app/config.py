@@ -366,6 +366,9 @@ REPLY_WATCH_EXPIRE_HOURS = 24
 BRIEFING_WINDOW_HOURS = 18
 BRIEFING_CHECK_SECONDS = 300
 BRIEFING_MAX_PLAN_AGE_HOURS = 6
+# Announce every timed event at its start ("it's time"), separate from the
+# planner's advance heads-ups. All-day events are excluded.
+BRIEFING_ANNOUNCE_AT_START = True
 
 # Max characters for the personality block (keeps system prompt lean)
 PERSONALITY_MAX_CHARS = 500
