@@ -121,14 +121,58 @@ def _field_matches(field: str, value: int, min_val: int, max_val: int) -> bool:
     return False
 
 
-async def send_to_bot(prompt: str, task_name: str, sinks: list[str] | None = None):
+_ANNOUNCE_SYSTEM = (
+    "You write a single short spoken notification. Follow the instruction using ONLY "
+    "the context given. Respond with just the words to be spoken — no preamble, no "
+    "meta-commentary, no markdown."
+)
+
+
+async def _announce(prompt: str) -> str:
     """
-    Run a scheduled task's prompt through a fresh agent and deliver the result
-    to the task's sinks (voice / telegram / silent — see delivery.py).
+    Run a tools-free task as one isolated LLM call.
+
+    A task that only has to phrase something it was already handed does not need
+    the agent: booting an AgentCore drags every MCP server's tool schema and the
+    memory injection into context, which measured 22k-92k input tokens to produce
+    two sentences. This path is the same call without any of that.
+
+    The clock is injected because the prompt was written when the task was
+    scheduled, and a heads-up that fires late must not say "start getting ready"
+    for something already underway.
+    """
+    import workflow_runner
+
+    adapter = workflow_runner._make_adapter()
+    now = datetime.now()
+    text = f"Current time: {now:%A %Y-%m-%d %-I:%M %p}\n\n{prompt}"
+    resp = await adapter.chat(_ANNOUNCE_SYSTEM, [{"role": "user", "content": text}], None)
+    return (resp.text or "").strip()
+
+
+async def send_to_bot(prompt: str, task_name: str, sinks: list[str] | None = None,
+                      use_tools: bool = True):
+    """
+    Run a scheduled task's prompt and deliver the result to the task's sinks
+    (voice / telegram / silent — see delivery.py).
+
+    use_tools=False runs it as a plain LLM call instead of a full agent — for
+    tasks that only phrase something, which is most announcements.
     """
     import delivery
 
     sinks = sinks or ["telegram"]
+
+    if not use_tools:
+        try:
+            response = await _announce(prompt)
+            print(f"  [scheduler] Announced: {response[:80]}")
+            await delivery.deliver(sinks, response)
+        except Exception as e:
+            print(f"  [scheduler] Announcement '{task_name}' failed: {e}")
+            await delivery.deliver([s for s in sinks if s != "silent"],
+                                   f"⚠️ Task '{task_name}' failed: {e}")
+        return
 
     # Pre-run notice only makes sense on a chat channel — a spoken
     # "running scheduled task" right before the spoken result is just noise.
@@ -197,7 +241,8 @@ async def run_task(task: dict):
     print(f"  [scheduler] Prompt: {task['prompt'][:80]}")
     try:
         await asyncio.create_task(
-            send_to_bot(task["prompt"], task["name"], task.get("sinks") or ["telegram"]))
+            send_to_bot(task["prompt"], task["name"], task.get("sinks") or ["telegram"],
+                        use_tools=task.get("tools", True)))
     except asyncio.CancelledError:
         # Spurious cancellation leaked from MCP teardown — the task itself
         # already ran. Swallow it so the daemon keeps running. (A real

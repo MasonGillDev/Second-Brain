@@ -225,6 +225,8 @@ def _create_scheduled_task(ev: dict, fire_dt: datetime) -> str:
         "prompt": prompt,
         "schedule": cron,
         "notify_telegram": True,
+        # Phrasing only — no tools needed (see scheduler._announce).
+        "tools": False,
         # Reminders are announced aloud by the voice assistant AND sent to
         # Telegram (see delivery.py sinks; the scheduler daemon routes these).
         "sinks": ["voice", "telegram"],

@@ -239,6 +239,8 @@ def apply_plan(decisions: list[dict]) -> list[dict]:
             "schedule": f"{fire.minute} {fire.hour} {fire.day} {fire.month} *",
             "notify_telegram": True,
             "sinks": ["voice", "telegram"],
+            # Phrasing only — no tools needed (see scheduler._announce).
+            "tools": False,
             "enabled": True,
             "created_at": now.isoformat(),
             "last_run": None,
