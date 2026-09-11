@@ -20,6 +20,7 @@ import json
 import time
 import socket
 import struct
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -41,6 +42,12 @@ TV_IP_FILE = Path(__file__).parent.parent / ".tv_ip"
 TV_TOKEN_FILE = Path(__file__).parent.parent / ".tv_token.txt"
 
 REST_TIMEOUT = 3
+# Hard ceiling on any single TV websocket call. samsungtvws' own timeout covers
+# connecting, not waiting for a reply the TV never sends: app_list() on this
+# TU7000 firmware blocks forever. Because this MCP server is single-threaded,
+# one such call wedges it permanently and every TV tool stops answering until
+# the server restarts — which is exactly how "the TV tools stopped working".
+WS_CALL_TIMEOUT = float(os.environ.get("TV_WS_TIMEOUT", "10"))
 
 # App IDs verified installed on this TV via GET /api/v2/applications/<id>
 # (the WebSocket app_list hangs on this firmware, so this map is primary).
@@ -226,6 +233,32 @@ def _drop_remote():
     _remote_ip = None
 
 
+def _deadline(fn, seconds: float = WS_CALL_TIMEOUT):
+    """Run a blocking TV call with a hard ceiling, raising TimeoutError instead
+    of hanging.
+
+    The worker is a daemon thread: a call stuck in the socket can't be killed,
+    but it must not hold the server. Abandoning it costs one idle thread; not
+    abandoning it costs every TV tool.
+    """
+    box: dict = {}
+
+    def _run():
+        try:
+            box["value"] = fn()
+        except BaseException as e:      # noqa: BLE001 - re-raised on the caller's thread
+            box["error"] = e
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"TV did not answer within {seconds:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def _with_remote(fn):
     """Run fn(remote), reconnecting once on a stale-connection failure.
 
@@ -236,10 +269,16 @@ def _with_remote(fn):
     if _remote is not None and time.time() - _last_use > IDLE_RECONNECT_SECONDS:
         _drop_remote()
     try:
-        result = fn(_get_remote(_load_cached_ip()))
+        result = _deadline(lambda: fn(_get_remote(_load_cached_ip())))
     except Exception:
         _drop_remote()
-        result = fn(_get_remote(_tv_ip()))
+        try:
+            result = _deadline(lambda: fn(_get_remote(_tv_ip())))
+        except Exception:
+            # Never leave a half-dead connection cached: the next call must
+            # start clean rather than inherit a socket nobody is reading.
+            _drop_remote()
+            raise
     _last_use = time.time()
     return result
 

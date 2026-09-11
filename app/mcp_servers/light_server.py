@@ -17,6 +17,7 @@ import subprocess
 import asyncio
 import ssl
 import time
+from datetime import datetime
 import urllib.request
 import urllib.error
 from abc import ABC, abstractmethod
@@ -455,7 +456,19 @@ class CyncBackend(LightBackend):
                 )
             self._apply_tokens(auth, tokens)
             if auth._user.expires_at - time.time() < self.REFRESH_MARGIN:
-                await auth.async_refresh_user_token()
+                try:
+                    await auth.async_refresh_user_token()
+                except Exception as e:
+                    # Cync refresh tokens are single-use and themselves expire.
+                    # Once that happens no stored credential can recover the
+                    # session — a fresh login needs the emailed 2FA code — so
+                    # say that instead of surfacing a bare "Refresh token failed".
+                    expired = datetime.fromtimestamp(auth._user.expires_at)
+                    raise RuntimeError(
+                        f"Cync session expired on {expired:%Y-%m-%d} and could not be "
+                        f"refreshed ({e}). Re-authenticate with 2FA: "
+                        f"./venv/bin/python app/mcp_servers/cync_setup.py"
+                    ) from e
                 self._write_tokens_atomic(auth)
 
     async def _ensure_connected(self):
