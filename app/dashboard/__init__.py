@@ -177,6 +177,12 @@ def create_app():
         app.reply_watch_task = asyncio.create_task(
             reply_watch.watch_loop(app.trigger_engine.run_prompt))
 
+        # Proactive calendar heads-ups: plans which upcoming events deserve a
+        # spoken nudge and writes one-time scheduler tasks for them. Lives here
+        # (not in the scheduler daemon) because it re-plans off calendar changes.
+        import calendar_briefing
+        app.briefing_task = asyncio.create_task(calendar_briefing.briefing_loop())
+
         # The voice assistant is now a standalone, decoupled service
         # (see ../voice_assistant). It is started independently and talks to
         # the dashboard only over the /api/inference text endpoint.
@@ -190,6 +196,8 @@ def create_app():
             app.trigger_poll_task.cancel()
         if getattr(app, "reply_watch_task", None):
             app.reply_watch_task.cancel()
+        if getattr(app, "briefing_task", None):
+            app.briefing_task.cancel()
 
         await app.agent.shutdown()
         if hasattr(app, 'original_stdout'):

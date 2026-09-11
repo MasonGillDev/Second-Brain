@@ -211,12 +211,14 @@ def _create_scheduled_task(ev: dict, fire_dt: datetime) -> str:
     """Write a one-time reminder task and return its id."""
     task_id = uuid.uuid4().hex[:8]
     cron = f"{fire_dt.minute} {fire_dt.hour} {fire_dt.day} {fire_dt.month} *"
-    prompt = (
-        f'Reminder: the calendar event "{ev["title"]}" is coming up — '
-        f"{_when_phrase(ev)}"
-        + (f", at {ev['location']}" if ev["location"] else "")
-        + ". Give me a short heads-up about this upcoming event."
-    )
+    # Built by calendar_briefing so a manually-set reminder says something as
+    # useful as an auto-planned one — the rest of the day, the event's notes, and
+    # a nudge about what to do, rather than reading the entry back.
+    # Imported lazily: calendar_briefing imports this module.
+    import calendar_briefing
+    minutes = max(1, int((datetime.strptime(ev["start_at"], _FMT) - fire_dt).total_seconds() // 60))
+    prompt = calendar_briefing.announcement_prompt(
+        ev, minutes, "the user set a reminder for this", fire_dt)
     task = {
         "id": task_id,
         "name": f"cal_evt_{ev['id']}",

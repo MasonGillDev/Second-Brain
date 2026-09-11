@@ -359,6 +359,14 @@ REPLY_WATCH_POLL_SECONDS = 20
 REPLY_WATCH_SETTLE_SECONDS = 45
 REPLY_WATCH_EXPIRE_HOURS = 24
 
+# Proactive calendar heads-ups (see app/calendar_briefing.py). The planner decides
+# which upcoming events deserve a spoken nudge and how far ahead. It re-plans when
+# the schedule changes rather than on a timer, so CHECK_SECONDS is a cheap SQLite
+# read, not an LLM call.
+BRIEFING_WINDOW_HOURS = 18
+BRIEFING_CHECK_SECONDS = 300
+BRIEFING_MAX_PLAN_AGE_HOURS = 6
+
 # Max characters for the personality block (keeps system prompt lean)
 PERSONALITY_MAX_CHARS = 500
 
