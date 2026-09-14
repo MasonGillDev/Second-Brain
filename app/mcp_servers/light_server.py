@@ -383,7 +383,7 @@ class CyncBackend(LightBackend):
 
     # How long a state read waits for the mesh to answer a state query before
     # serving whatever pycync has cached.
-    STATE_QUERY_TIMEOUT = 2.5
+    STATE_QUERY_TIMEOUT = float(os.environ.get("CYNC_STATE_TIMEOUT", "2.5"))
 
     def __init__(self):
         self._cync = None
@@ -397,6 +397,8 @@ class CyncBackend(LightBackend):
         # Set by pycync's update callback whenever a state-query response (or
         # any device push) arrives; _refresh_state waits on it.
         self._state_fresh = asyncio.Event()
+        # Set to a reason string when the last state read couldn't be trusted.
+        self._state_stale: str | None = None
 
     def _load_tokens(self):
         if not CYNC_TOKEN_FILE.exists():
@@ -532,12 +534,25 @@ class CyncBackend(LightBackend):
                 self._cync._command_client.update_mesh_devices(),
                 timeout=self.STATE_QUERY_TIMEOUT,
             )
-        except Exception:
-            return  # no Wi-Fi-reachable hub right now — serve cached state
+        except Exception as e:
+            # Silently serving cached state here is how "OFF, 0%, UNREACHABLE"
+            # ends up looking like a fact instead of "we never heard back".
+            detail = str(e).strip()
+            self._state_stale = (
+                f"mesh did not answer in {self.STATE_QUERY_TIMEOUT:g}s"
+                if isinstance(e, (asyncio.TimeoutError, TimeoutError))
+                else f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+            )
+            print(f"[CyncBackend] state query failed ({self._state_stale}) — "
+                  f"reporting cached/unknown state", file=sys.stderr)
+            return
         try:
             await asyncio.wait_for(self._state_fresh.wait(), timeout=self.STATE_QUERY_TIMEOUT)
+            self._state_stale = None
         except (asyncio.TimeoutError, TimeoutError):
-            pass  # mesh didn't answer in time — cached state is the best we have
+            self._state_stale = f"no answer within {self.STATE_QUERY_TIMEOUT}s"
+            print(f"[CyncBackend] mesh did not answer within {self.STATE_QUERY_TIMEOUT}s — "
+                  f"reporting cached/unknown state", file=sys.stderr)
 
     async def list_lights(self) -> list[dict]:
         await self._ensure_connected()
@@ -553,6 +568,10 @@ class CyncBackend(LightBackend):
                 "on": getattr(dev, "is_on", False),
                 "brightness_pct": getattr(dev, "brightness", 0),
                 "reachable": getattr(dev, "is_online", True),
+                # False when the mesh never answered: the on/brightness values
+                # below are then pycync's defaults, not readings.
+                "state_known": self._state_stale is None,
+                "state_note": self._state_stale,
             }
             result.append(entry)
         return result
@@ -772,6 +791,8 @@ class CyncProxyBackend(LightBackend):
                 "on": l.get("on", False),
                 "brightness_pct": l.get("brightness", 0),
                 "reachable": l.get("reachable", True),
+                "state_known": l.get("state_known", True),
+                "state_note": l.get("state_note"),
             })
         return result
 
@@ -957,6 +978,16 @@ async def list_lights() -> str:
         try:
             lights = await backend.list_lights()
             for l in lights:
+                # An unconfirmed read must not be printed as a reading: pycync
+                # defaults look exactly like "off at zero brightness", which
+                # reads as fact and is how a dead mesh looked like real state.
+                if not l.get("state_known", True):
+                    note = l.get("state_note") or "no answer from the mesh"
+                    lines.append(
+                        f"[{backend.prefix}:{l['id']}] {l['name']} — state unknown "
+                        f"({note}); the device is not reachable right now"
+                    )
+                    continue
                 on = "ON" if l["on"] else "OFF"
                 reachable = "reachable" if l["reachable"] else "UNREACHABLE"
                 lines.append(

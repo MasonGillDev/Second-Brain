@@ -442,7 +442,7 @@ MCP_SERVERS = {
     "lights": {
         "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
         "args": [_os.path.join(APP_DIR, "mcp_servers", "light_server.py")],
-        "env": None,
+        "env": {"CYNC_STATE_TIMEOUT": _os.environ.get("CYNC_STATE_TIMEOUT", "2.5")},
     },
     "tv": {
         "command": _os.path.join(PROJECT_ROOT, "venv", "bin", "python"),
